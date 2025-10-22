@@ -1,73 +1,80 @@
-# smallm
+# PlanckGPT
 
-Smallm (smaLL + LLm) is my attempt on making a tiny toy language model just for fun and educational purposes. It has about 17.9m parameters and is trained on roughly 3.25 billion tokens of the Cosmopedia dataset. This is very small compared to LLMs' standards, which also explains why it is kinda goofy when you use it (lol), but you can definitely train this on a mid-range card for just half a day or 1-2 days, and it can still generate proper English and data that should be related to the user's prompt.
+PlanckGPT is my attempt on making a tiny language model (planck length refence :D) from scratch mostly for fun and educational purposes, but also to see how far a consumer-level computer can go. It has about 150m parameters and is trained on roughly 3 billion tokens of the Fineweb dataset. This is small compared to modern LLMs' standards, which also explains why it is goofy when you use it (lol), but you can definitely train this on a mid-range card for just 1-2 days, and it can still generate proper English and data that should be related to the user's prompt.
 
 ## Setup
 
 Setup venv and install necessary packages:
 
 ```sh
-# Create and activate venv (run this every time you start)
+# Create and activate venv
 python -m venv venv
+# Run this every time you start
 source venv/scripts/activate
 # or "./venv/scripts/activate" if you are on windows
 
 # Install packages (once)
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
-pip install tiktoken datasets
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu129
+pip install tiktoken datasets bitsandbytes
 ```
 
-Of course, you should already install compatible CUDA and Python versions, I currently use Python 3.13 and CUDA 13 (which is compatible with CUDA 12.8 mentioned above).
+Of course, you should already install compatible CUDA and Python versions, I currently use Python 3.13 and CUDA 13 (which is compatible with CUDA 12.9 mentioned above).
 
-## Running smallm
+## Running PlanckGPT
 
 1. Download the latest model (`chatbot.pth`) in the releases page.
 2. Simply run:
 ```sh
-python main.py
+python inference.py
 ```
 
-A prompt will appear for you to chat with the model. You can also import the `ChatBot` class for more control if needed.
+A prompt will appear for you to chat with the model.
 
 ## Training
 
-Head over to `./main.py` and change `training` to `True`, then run:
+To train the model from scratch, run:
 ```sh
-python main.py
+python train.py
 ```
 
-The model will train with 3.25b tokens with 10 325m-token segments (estimated 18-20 hours on my Laptop RTX 5070), and after each epoch it will save the current model to `./chatbot.pth`.
-
-To start from where you left off, just name your file `chatbot_continue.pth` to resume training.
+The model will train with 3b+ tokens with 20 150m-token segments (estimated 45 hours on my Laptop RTX 5070), and after each epoch it will save the current model to `./chatbot.pth`.
 
 ## Architecture
 
 Currently it uses:
 
-* Tokenizer: Tiktoken with GPT-2 encoding (50,257 vocab size)
-* Embedding: 256-dimensional token embeddings
-* Positional Encoding: 256-dimensional position embeddings
-* Transformer: 6 encoder layers, 8 attention heads, 1024 d_ffn, 256 d_model
-* Output: Linear layer to vocabulary
+* Tokenizer: Tiktoken with GPT-2 encoding (50,257 vocab size).
+* Embedding: 768-dimensional token embedding.
+* Rotary positional embedding.
+* Transformer: 12 decoder layers, 12 heads, 3072 d_ffn, 768 d_model.
+* Multi-Query Attention with flash attention support (sdpa).
+* Squared ReLU for activation.
+* RMSNorm without learnable params for normalization, used in transformer and before output.
+* Output: Linear layer to vocabulary.
 
 and is trained with:
 
-* Dataset: Cosmopedia (~3.25b tokens) with 50% overlapping
-* Context Window: 1024 tokens
-* Batch Size: 8 (effective batch size: 64 with gradient accumulation)
-* Optimizer: AdamW with mixed precision training
+* Dataset: Fineweb (~3b tokens) with no overlapping.
+* Context Window: 1024 tokens.
+* Batch Size: 8 (effective batch size: 512 with gradient accumulation).
+* Muon optimizer for transformer weights, 8-bit AdamW optimizer for embedding and linear layers.
+* LinearLR for 2% warmup, CosineAnnealingLR for lr decay.
+* BF16 mixed precision training and other Blackwell-specific features.
+* Training with torch.compile on "max-autotune" mode.
+* Gradient checkpointing in 2/3 of the transformer layers.
 
 and generates text with:
 
-* Sampling: Top-k sampling (k=50)
-* Temperature: 0.8
-* Context Window: 1024 tokens
-* Stopping: EOS token for fixed limit (10240 by default)
-* Simple repetition penalty
+* Sampling: Top-k sampling (k=50).
+* Temperature: 0.7.
+* Context Window: 1024 tokens.
+* Stopping: EOS token for fixed limit (10240 by default).
+* Simple repetition penalty with 64 latest tokens.
+
+The current configuration is designed to squeeze out the best possible performance out of an 8gb 5070, you can change the configs to match your card.
 
 ## Copyrights and License
 
 Copyrights © 2025 Nguyen Phu Minh.
 
 This project is licensed under the Apache 2.0 License.
-
