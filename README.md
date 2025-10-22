@@ -1,6 +1,6 @@
 # PlanckGPT
 
-PlanckGPT is my attempt on making a tiny language model (planck length refence :D) from scratch mostly for fun and educational purposes, but also to see how far a consumer-level computer can go. It has about 110m parameters and is trained on roughly 3 billion tokens of the Fineweb dataset. This is small compared to modern LLMs' standards, which also explains why it is goofy when you use it (lol), but you can definitely train this on a mid-range card for just 3-4 days, and it can still generate proper English and data that should be related to the user's prompt.
+PlanckGPT is my attempt on making a tiny language model (planck length refence :D) from scratch mostly for fun and educational purposes, but also to see how far a consumer-level computer can go. It has about 150m parameters and is trained on roughly 3 billion tokens of the Fineweb dataset. This is small compared to modern LLMs' standards, which also explains why it is goofy when you use it (lol), but you can definitely train this on a mid-range card for just 1-2 days, and it can still generate proper English and data that should be related to the user's prompt.
 
 ## Setup
 
@@ -37,7 +37,7 @@ To train the model from scratch, run:
 python train.py
 ```
 
-The model will train with 3b+ tokens with 20 150m-token segments (estimated 60 hours on my Laptop RTX 5070), and after each epoch it will save the current model to `./chatbot.pth`.
+The model will train with 3b+ tokens with 20 150m-token segments (estimated 45 hours on my Laptop RTX 5070), and after each epoch it will save the current model to `./chatbot.pth`.
 
 ## Architecture
 

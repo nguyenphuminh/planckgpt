@@ -1,5 +1,4 @@
 import torch
-import os
 from model import ChatBot
 
 if __name__ == "__main__":

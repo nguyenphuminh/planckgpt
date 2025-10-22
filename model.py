@@ -311,8 +311,6 @@ class ChatBot(nn.Module):
         topk=50,
         memory=[]
     ):
-        print(prompt, end="")
-
         self.eval()
         
         with torch.no_grad():
@@ -326,7 +324,8 @@ class ChatBot(nn.Module):
                 input_tensor = torch.tensor(current_tokens, device=self.device).unsqueeze(0)
 
                 # Forward pass
-                output = self.forward(input_tensor)
+                with autocast(device_type=self.device.type, dtype=torch.bfloat16):
+                    output = self.forward(input_tensor)
                 logits = output[0, -1, :]
 
                 # Apply temperature scaling
