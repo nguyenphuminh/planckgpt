@@ -56,7 +56,7 @@ and is trained with:
 
 * Dataset: Fineweb (~3b tokens) with no overlapping.
 * Context Window: 1024 tokens.
-* Batch Size: 8 (effective batch size: 512 with gradient accumulation).
+* Batch Size: 5 (effective batch size: 510 with gradient accumulation).
 * Muon optimizer for transformer weights, 8-bit AdamW optimizer for embedding and linear layers.
 * LinearLR for 2% warmup, CosineAnnealingLR for lr decay.
 * BF16 mixed precision training and other Blackwell-specific features.
