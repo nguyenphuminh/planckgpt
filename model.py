@@ -3,7 +3,7 @@ import tiktoken
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.optim.lr_scheduler import SequentialLR, LinearLR, CosineAnnealingLR
+from torch.optim.lr_scheduler import LinearLR
 from torch.utils.checkpoint import checkpoint
 from torch.amp import autocast
 from muon import Muon, get_muon_momentum
@@ -81,7 +81,7 @@ class ChatBot(nn.Module):
         # Config
         self.d_model = options.get("d_model", 768)
         self.num_layers = options.get("num_layers", 12)
-        self.num_heads = options.get("num_heads", 12)
+        self.num_heads = options.get("num_heads", 6)
         self.rotary_seq_len = options.get("rotary_seq_len", 1024)
         self.overlapping = options.get("overlapping", 1)
         
@@ -107,9 +107,6 @@ class ChatBot(nn.Module):
             torch.nn.init.zeros_(layer.attn.out_proj.weight)
             torch.nn.init.zeros_(layer.ffn2.weight)
         torch.nn.init.zeros_(self.output.weight)
-
-        # Tie weights
-        # self.output.weight = self.embedding.weight
         
         # Only use CUDA
         if not torch.cuda.is_available():
@@ -185,35 +182,52 @@ class ChatBot(nn.Module):
         
         return output
     
-    def train_model(self, data_loader, sequence_length=1024, batch_size=5, gradient_accumulation_steps=102, T_max=5722):
+    def train_model(self, data_loader, sequence_length=1024, batch_size=4, gradient_accumulation_steps=128, T_max=5722):
         print(f"Training with batch_size={batch_size}, gradient_accumulation_steps={gradient_accumulation_steps}")
         print(f"Effective batch size: {batch_size * gradient_accumulation_steps}")
 
         # Cap context window
         sequence_length = min(sequence_length, self.rotary_seq_len)
         
-        # 2% warmup
-        warmup_steps = int(0.02 * T_max)
+        # Loss
+        criterion = nn.CrossEntropyLoss()
+
+        # 45% cooldown to 0.1x
+        stable_steps = int(0.55 * T_max)
+        cooldown_steps = int(0.45 * T_max)
         
         # AdamW for embedding/linear weights
         linear_params = [self.embedding.weight, self.output.weight]
-        adamw_opt = bnb.optim.AdamW8bit(linear_params, lr=0.0002)
-        # Schedulers for AdamW
-        adamw_warmup_scheduler = LinearLR(adamw_opt, start_factor=0.01, total_iters=warmup_steps)
-        adamw_cosine_scheduler = CosineAnnealingLR(adamw_opt, T_max=T_max-warmup_steps, eta_min=1e-5)
-        adamw_scheduler = SequentialLR(adamw_opt, schedulers=[adamw_warmup_scheduler, adamw_cosine_scheduler], milestones=[warmup_steps])
-        
+        adamw_opt = bnb.optim.AdamW8bit(linear_params, lr=0.008, betas=(0.65, 0.95), weight_decay=0.0)
+        adamw_cooldown_scheduler = LinearLR(adamw_opt, start_factor=1.0, end_factor=0.1, total_iters=cooldown_steps)
+
         # Muon for transformer params
         transformer_params = [p for n, p in self.named_parameters() if "embedding" not in n and "output" not in n]
-        muon_opt = Muon(transformer_params, lr=0.02, momentum=0.95)
-        # Schedulers for Muon
-        muon_warmup_scheduler = LinearLR(muon_opt, start_factor=0.01, total_iters=warmup_steps)
-        muon_cosine_scheduler = CosineAnnealingLR(muon_opt, T_max=T_max-warmup_steps, eta_min=1e-5)
-        muon_scheduler = SequentialLR(muon_opt, schedulers=[muon_warmup_scheduler, muon_cosine_scheduler], milestones=[warmup_steps])
-        criterion = nn.CrossEntropyLoss()
+        muon_opt = Muon(transformer_params, lr=0.06, momentum=0.95)
+        muon_cooldown_scheduler = LinearLR(muon_opt, start_factor=1.0, end_factor=0.1, total_iters=cooldown_steps)
 
         # Track optimizer step for Muon momentum update
         optimizer_step = 0
+
+        def opt_step():
+            # Gradient clipping
+            torch.nn.utils.clip_grad_norm_(self.parameters(), 1.0)
+
+            # AdamW step
+            if optimizer_step % 2 != 0:
+                adamw_opt.step()
+                adamw_opt.zero_grad(set_to_none=True)
+
+            # Muon step
+            for group in muon_opt.param_groups:
+                group["momentum"] = get_muon_momentum(optimizer_step)
+            muon_opt.step()
+            muon_opt.zero_grad(set_to_none=True)
+
+            # LR scheduler steps
+            if optimizer_step > stable_steps:
+                adamw_cooldown_scheduler.step()
+                muon_cooldown_scheduler.step()
 
         for segment_index, segment in enumerate(data_loader):
             # Encode segment to tokens
@@ -258,36 +272,12 @@ class ChatBot(nn.Module):
                 
                 # Update weights every gradient_accumulation_steps
                 if num_batches % gradient_accumulation_steps == 0:
-                    # AdamW step
-                    torch.nn.utils.clip_grad_norm_(self.parameters(), 1.0)
-                    adamw_opt.step()
-                    adamw_opt.zero_grad(set_to_none=True)
-                    adamw_scheduler.step()
-
-                    # Muon step
-                    for group in muon_opt.param_groups:
-                        group["momentum"] = get_muon_momentum(optimizer_step)
-                    muon_opt.step()
-                    muon_opt.zero_grad(set_to_none=True)
-                    muon_scheduler.step()
-
+                    opt_step()
                     optimizer_step += 1
 
             # Final update if needed
             if num_batches % gradient_accumulation_steps != 0:
-                # AdamW step
-                torch.nn.utils.clip_grad_norm_(self.parameters(), 1.0)
-                adamw_opt.step()
-                adamw_opt.zero_grad(set_to_none=True)
-                adamw_scheduler.step()
-
-                # Muon step
-                for group in muon_opt.param_groups:
-                    group["momentum"] = get_muon_momentum(optimizer_step)
-                muon_opt.step()
-                muon_opt.zero_grad(set_to_none=True)
-                muon_scheduler.step()
-
+                opt_step()
                 optimizer_step += 1
 
             # Get log info
@@ -358,7 +348,7 @@ class ChatBot(nn.Module):
                 next_token_id = top_k_indices[sampled_index].item()
 
                 # Stop on eos token and conversation overlap
-                if next_token_id == self.eos_token_id or next_token_id == 20490 or next_token_id == 48902:
+                if next_token_id == self.eos_token_id:
                     break
 
                 # Push newest token
@@ -395,3 +385,78 @@ class ChatBot(nn.Module):
     
     def tokens_to_text(self, tokens):
         return self.encoding.decode(tokens)
+
+    def validate_model(self, data_loader, sequence_length=1024, batch_size=5):
+        print(f"Running validation with batch_size={batch_size}, sequence_length={sequence_length}")
+        
+        # Cap context window
+        sequence_length = min(sequence_length, self.rotary_seq_len)
+        
+        # Set model to eval mode
+        self.eval()
+        
+        criterion = nn.CrossEntropyLoss()
+        
+        total_loss = 0
+        total_tokens = 0
+        num_segments = 0
+        
+        # No gradient computation during validation
+        with torch.no_grad():
+            for segment_index, segment in enumerate(data_loader):
+                # Encode segment to tokens (same as training)
+                tokens = self.text_to_tokens(segment)
+                print(f"Val Segment {segment_index + 1}: {len(segment)} chars -> {len(tokens)} tokens")
+                
+                # Pre-create all sequences (same as training)
+                sequences = []
+                for start_idx in range(0, len(tokens) - sequence_length, sequence_length // self.overlapping):
+                    sequence = tokens[start_idx:start_idx + sequence_length]
+                    if len(sequence) == sequence_length:
+                        sequences.append(sequence)
+                
+                print(f"Val Segment {segment_index + 1}: Pre-computed {len(sequences)} sequences in memory")
+                
+                segment_loss = 0
+                segment_tokens = 0
+                
+                # Process batches (same as training)
+                for batch_start in range(0, len(sequences), batch_size):
+                    batch_sequences = torch.tensor(sequences[batch_start:batch_start + batch_size], device=self.device)
+                    input_tokens = batch_sequences[:, :-1]
+                    target_tokens = batch_sequences[:, 1:]
+                    
+                    # Enable mixed precision (same as training)
+                    with autocast(device_type=self.device.type, dtype=torch.bfloat16):
+                        output = self.forward(input_tokens)  # [batch_size, seq_len-1, vocab_size]
+                        output = output.reshape(-1, self.vocab_size)  # [batch_size * seq_len-1, vocab_size]
+                        target_tokens = target_tokens.reshape(-1)  # [batch_size * seq_len-1]
+                        loss = criterion(output, target_tokens)
+                    
+                    segment_loss += loss.item() * target_tokens.size(0)
+                    segment_tokens += target_tokens.size(0)
+                
+                total_loss += segment_loss
+                total_tokens += segment_tokens
+                num_segments += 1
+                
+                # Log segment validation results
+                avg_segment_loss = segment_loss / segment_tokens if segment_tokens > 0 else 0
+                avg_segment_perplexity = math.exp(avg_segment_loss) if avg_segment_loss < 20 else float("inf")
+                print(f"Val Segment {segment_index + 1}: Loss: {avg_segment_loss:.4f}, Perplexity: {avg_segment_perplexity:.2f}")
+        
+        # Calculate overall validation metrics
+        avg_loss = total_loss / total_tokens if total_tokens > 0 else 0
+        perplexity = math.exp(avg_loss) if avg_loss < 20 else float("inf")
+
+        print(f"Segments: {num_segments}")
+        print(f"Total tokens: {total_tokens}")
+        print(f"Average Loss: {avg_loss:.4f}")
+        print(f"Perplexity: {perplexity:.2f}")
+        
+        return {
+            "loss": avg_loss,
+            "perplexity": perplexity,
+            "total_tokens": total_tokens,
+            "num_segments": num_segments
+        }

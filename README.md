@@ -46,19 +46,19 @@ Currently it uses:
 * Tokenizer: Tiktoken with GPT-2 encoding (50,257 vocab size).
 * Embedding: 768-dimensional token embedding.
 * Rotary positional embedding.
-* Transformer: 12 decoder layers, 12 heads, 3072 d_ffn, 768 d_model.
+* Transformer: 12 decoder layers, 6 heads, 3072 d_ffn, 768 d_model.
 * Multi-Query Attention with flash attention support (sdpa).
 * Squared ReLU for activation.
-* RMSNorm without learnable params for normalization, used in transformer and before output.
+* RMSNorm without learnable params for normalization, applied how you would expect, but also used on QK, embedding, and before output projection.
 * Output: Linear layer to vocabulary.
 
 and is trained with:
 
 * Dataset: Fineweb (~3b tokens) with no overlapping.
 * Context Window: 1024 tokens.
-* Batch Size: 8 (effective batch size: 512 with gradient accumulation).
-* Muon optimizer for transformer weights, 8-bit AdamW optimizer for embedding and linear layers.
-* LinearLR for 2% warmup, CosineAnnealingLR for lr decay.
+* Batch Size: 4 (effective batch size: 512 with gradient accumulation).
+* Muon optimizer for transformer weights, 8-bit AdamW optimizer for embedding and output projection.
+* Stable LR for the first 55% of the steps, LinearLR decay to 0.1x for the rest.
 * BF16 mixed precision training and other Blackwell-specific features.
 * Training with torch.compile on "max-autotune" mode.
 * Gradient checkpointing in 2/3 of the transformer layers.
