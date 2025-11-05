@@ -2,6 +2,8 @@ import torch
 from model import ChatBot
 
 if __name__ == "__main__":
+    torch.cuda.empty_cache()
+
     # Initialize model
     chatbot = ChatBot()
     chatbot = torch.compile(chatbot, mode="reduce-overhead")

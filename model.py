@@ -347,6 +347,8 @@ class ChatBot(nn.Module):
                 sampled_index = torch.multinomial(top_k_probs, 1).item()
                 next_token_id = top_k_indices[sampled_index].item()
 
+                torch.cuda.empty_cache()
+
                 # Stop on eos token and conversation overlap
                 if next_token_id == self.eos_token_id:
                     break
