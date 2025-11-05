@@ -3,7 +3,7 @@ import tiktoken
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.optim.lr_scheduler import SequentialLR, LinearLR, CosineAnnealingLR
+from torch.optim.lr_scheduler import LinearLR
 from torch.utils.checkpoint import checkpoint
 from torch.amp import autocast
 from muon import Muon, get_muon_momentum
@@ -182,7 +182,7 @@ class ChatBot(nn.Module):
         
         return output
     
-    def train_model(self, data_loader, sequence_length=1024, batch_size=5, gradient_accumulation_steps=102, T_max=5722):
+    def train_model(self, data_loader, sequence_length=1024, batch_size=4, gradient_accumulation_steps=128, T_max=5722):
         print(f"Training with batch_size={batch_size}, gradient_accumulation_steps={gradient_accumulation_steps}")
         print(f"Effective batch size: {batch_size * gradient_accumulation_steps}")
 
@@ -348,7 +348,7 @@ class ChatBot(nn.Module):
                 next_token_id = top_k_indices[sampled_index].item()
 
                 # Stop on eos token and conversation overlap
-                if next_token_id == self.eos_token_id or next_token_id == 20490 or next_token_id == 48902:
+                if next_token_id == self.eos_token_id:
                     break
 
                 # Push newest token

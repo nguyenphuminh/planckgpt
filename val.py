@@ -1,6 +1,6 @@
 import torch
 from model import ChatBot
-from data import load_data, load_val_data
+from data import load_val_data
 
 if __name__ == "__main__":
     torch.cuda.empty_cache()
