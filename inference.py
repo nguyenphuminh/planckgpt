@@ -1,4 +1,5 @@
 import torch
+import os
 from model import ChatBot
 
 if __name__ == "__main__":
@@ -12,8 +13,12 @@ if __name__ == "__main__":
     print(f"Model parameters: {sum(p.numel() for p in chatbot.parameters()):,}")
 
     # Load
-    print("Loaded from chatbot.pth")
-    chatbot.load()
+    if os.path.exists("chatbot_pretrained.pth"):
+        print("Loaded from chatbot_pretrained.pth")
+        chatbot.load(path="chatbot_pretrained.pth")
+    else:
+        print("Loaded from chatbot.pth")
+        chatbot.load()
 
     # Prompt
     while True:
@@ -28,5 +33,6 @@ if __name__ == "__main__":
         elif prompt == "/clear":
             print("\033c", end="")
         else:
-            chatbot.generate(prompt)
-            print("\033[0m")
+            print("Assistant:", end="")
+            chatbot.generate(f"User: {prompt}\nAssistant: ")
+            print("\033[0m", end="")

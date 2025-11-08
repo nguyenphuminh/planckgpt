@@ -182,7 +182,7 @@ class ChatBot(nn.Module):
         
         return output
     
-    def train_model(self, data_loader, sequence_length=1024, batch_size=4, gradient_accumulation_steps=128, T_max=5722):
+    def train_model(self, data_loader, sequence_length=1024, batch_size=4, gradient_accumulation_steps=128, T_max=5277):
         print(f"Training with batch_size={batch_size}, gradient_accumulation_steps={gradient_accumulation_steps}")
         print(f"Effective batch size: {batch_size * gradient_accumulation_steps}")
 
@@ -349,8 +349,12 @@ class ChatBot(nn.Module):
 
                 torch.cuda.empty_cache()
 
-                # Stop on eos token and conversation overlap
-                if next_token_id == self.eos_token_id:
+                if (
+                    # Stop on eos token and conversation overlap
+                    next_token_id == self.eos_token_id or
+                    # Stop on "User: or Assistant:"
+                    (next_token_id == 25 and current_tokens[-1] in [12982, 48902])
+                ):
                     break
 
                 # Push newest token
@@ -360,7 +364,11 @@ class ChatBot(nn.Module):
                 word_stack.append(next_token_id)
                 decoded_word = self.tokens_to_text(word_stack)
 
-                if "\ufffd" not in decoded_word:
+                if (
+                    "\ufffd" not in decoded_word and
+                    "User" not in decoded_word and
+                    "Assistant" not in decoded_word
+                ):
                     print(decoded_word, end="")
                     word_stack = []
         
