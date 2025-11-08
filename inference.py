@@ -13,9 +13,13 @@ if __name__ == "__main__":
     print(f"Model parameters: {sum(p.numel() for p in chatbot.parameters()):,}")
 
     # Load
+    is_pretrained = False
+
     if os.path.exists("chatbot_pretrained.pth"):
         print("Loaded from chatbot_pretrained.pth")
         chatbot.load(path="chatbot_pretrained.pth")
+
+        is_pretrained = True
     else:
         print("Loaded from chatbot.pth")
         chatbot.load()
@@ -34,5 +38,8 @@ if __name__ == "__main__":
             print("\033c", end="")
         else:
             print("Assistant:", end="")
-            chatbot.generate(f"User: {prompt}\nAssistant: ")
+            if is_pretrained:
+                chatbot.generate(prompt)
+            else:
+                chatbot.generate(f"User: {prompt}\nAssistant: ")
             print("\033[0m", end="")
