@@ -91,6 +91,22 @@ and generates text with:
 
 The current configuration is designed to squeeze out the best possible performance out of an 8gb 5070, you can change the configs to match your card.
 
+## Acknowledgements
+
+PlanckGPT is inspired by [`modded-nanogpt`](https://github.com/KellerJordan/modded-nanogpt) and [`nanochat`](https://github.com/karpathy/nanochat).
+
+## Cite PlanckGPT
+
+```bibtex
+@misc{planckgpt,
+  author = {Phu Minh Nguyen},
+  title = {PlanckGPT: Train a GPT from scratch on your laptop},
+  year = {2025},
+  publisher = {GitHub},
+  url = {https://github.com/nguyenphuminh/planckgpt}
+}
+```
+
 ## Copyrights and License
 
 Copyrights © 2025 Nguyen Phu Minh.
