@@ -32,12 +32,16 @@ class MultiQueryAttention(nn.Module):
         self.v_proj = nn.Linear(dim, self.head_dim, bias=False)
         self.out_proj = nn.Linear(dim, dim, bias=False)
     
-    def forward(self, x, cos, sin):
+    def forward(self, x, cos, sin, value_embed=None):
         B, L, _ = x.shape
         
         q = self.q_proj(x).view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
         k = self.k_proj(x).view(B, L, 1, self.head_dim).transpose(1, 2)
         v = self.v_proj(x).view(B, L, 1, self.head_dim).transpose(1, 2)
+
+        # Add value embedding if provided
+        if value_embed is not None:
+            v = v + value_embed.view(B, L, 1, self.head_dim).transpose(1, 2)
 
         # RoPE
         q = apply_rotary_emb(q, cos, sin)
@@ -79,6 +83,7 @@ class ChatBot(nn.Module):
         self.eos_token_id = self.encoding.encode("<|endoftext|>", allowed_special={"<|endoftext|>"})[0]
         
         # Config
+        self.num_value_embeds = options.get("num_value_embeds", 3)
         self.d_model = options.get("d_model", 768)
         self.num_layers = options.get("num_layers", 12)
         self.num_heads = options.get("num_heads", 6)
@@ -87,6 +92,12 @@ class ChatBot(nn.Module):
         
         # Embedding
         self.embedding = nn.Embedding(self.vocab_size, self.d_model, dtype=torch.bfloat16)
+
+        # Value embeds
+        self.value_embeds = nn.ModuleList([
+            nn.Embedding(self.vocab_size, self.d_model // self.num_heads, dtype=torch.bfloat16) 
+            for _ in range(self.num_value_embeds)
+        ])
 
         # Transformer decoder layers
         self.transformer = nn.ModuleList([
@@ -154,6 +165,10 @@ class ChatBot(nn.Module):
     def forward(self, token_ids):
         _, seq_len = token_ids.shape
 
+        # Create value embeddings
+        ve = [value_embed(token_ids) for value_embed in self.value_embeds]
+        ve_pattern = [None, ve[1], ve[2]] + [None] * (self.num_layers - 6) + [ve[0], ve[1], ve[2]]
+
         # Token embedding
         embedding = self.embedding(token_ids)
 
@@ -166,9 +181,9 @@ class ChatBot(nn.Module):
 
         for i, layer in enumerate(self.transformer):
             if i % 3 != 2:
-                embedding = checkpoint(layer, embedding, cos, sin, use_reentrant=False)
+                embedding = checkpoint(layer, embedding, cos, sin, ve_pattern[i], use_reentrant=False)
             else:
-                embedding = layer(embedding, cos, sin)
+                embedding = layer(embedding, cos, sin, ve_pattern[i])
 
         # Final norm
         embedding = rms_norm(embedding)
