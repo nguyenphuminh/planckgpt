@@ -68,8 +68,8 @@ class OptimizedTransformerLayer(nn.Module):
         self.ffn1 = nn.Linear(dim, dim_ff, bias=False)
         self.ffn2 = nn.Linear(dim_ff, dim, bias=False)
     
-    def forward(self, x, cos, sin):
-        x = x + self.attn(rms_norm(x), cos, sin)
+    def forward(self, x, cos, sin, value_embed=None):
+        x = x + self.attn(rms_norm(x), cos, sin, value_embed)
         x = x + self.ffn2(F.relu(self.ffn1(rms_norm(x))).square())
         return x
 
