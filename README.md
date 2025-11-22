@@ -88,6 +88,7 @@ and generates text with:
 * Context Window: 1024 tokens.
 * Stopping: EOS token for fixed limit (10240 by default).
 * Simple repetition penalty with 64 latest tokens.
+* KV cache for faster inference.
 
 The current configuration is designed to squeeze out the best possible performance out of an 8gb 5070, you can change the configs to match your card.
 

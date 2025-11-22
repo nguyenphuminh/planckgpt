@@ -40,20 +40,30 @@ if __name__ == "__main__":
             print("/enablemem  - Enable chat memory, not recommended for now")
             print("/disablemem - Disable chat memory")
             print("/clearmem   - Clear chat memory")
+            print("/showmem    - Log out chat memory")
         elif prompt == "/clear":
             print("\033c", end="")
         elif prompt == "/enablemem":
             is_mem_enabled = True
+            print("Memory enabled")
         elif prompt == "/disablemem":
             is_mem_enabled = False
+            print("Memory disabled")
         elif prompt == "/clearmem":
+            print("Memory cleared")
             memory = []
+        elif prompt == "/showmem":
+            print(chatbot.tokens_to_text(memory))
         else:
-            memory = memory if is_mem_enabled else []
+            current_memory = memory if is_mem_enabled else []
 
             print("Assistant:", end="")
             if is_pretrained:
-                memory = chatbot.generate(prompt, memory=memory)
+                new_memory = chatbot.generate(prompt, memory=current_memory)
             else:
-                memory = chatbot.generate(f"User: {prompt}\nAssistant: ", memory=memory)
+                new_memory = chatbot.generate(f"User: {prompt}\nAssistant: ", memory=current_memory)
+
+            if is_mem_enabled:
+                memory = new_memory
+
             print("\033[0m", end="")

@@ -9,17 +9,19 @@ from torch.amp import autocast
 from muon import Muon, get_muon_momentum
 import bitsandbytes as bnb
 
+# RMS norm with no learnable params
 def rms_norm(x):
     return F.rms_norm(x, (x.size(-1),))
 
+# Rotate embeddings for RoPE
 def apply_rotary_emb(x, cos, sin):
     x1, x2 = torch.chunk(x, 2, dim=-1)
     o1 = x1 * cos - x2 * sin
     o2 = x2 * cos + x1 * sin
     return torch.cat((o1, o2), dim=-1)
 
+# MQA for less memory use
 class MultiQueryAttention(nn.Module):
-    # MQA with Flash Attention - maximum memory efficiency
     def __init__(self, dim, num_heads):
         super().__init__()
         assert dim % num_heads == 0
@@ -31,10 +33,10 @@ class MultiQueryAttention(nn.Module):
         self.k_proj = nn.Linear(dim, self.head_dim, bias=False)
         self.v_proj = nn.Linear(dim, self.head_dim, bias=False)
         self.out_proj = nn.Linear(dim, dim, bias=False)
-    
-    def forward(self, x, cos, sin):
+
+    def forward(self, x, cos, sin, kv_cache=None):
         B, L, _ = x.shape
-        
+
         q = self.q_proj(x).view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
         k = self.k_proj(x).view(B, L, 1, self.head_dim).transpose(1, 2)
         v = self.v_proj(x).view(B, L, 1, self.head_dim).transpose(1, 2)
@@ -46,51 +48,81 @@ class MultiQueryAttention(nn.Module):
         # QK norm
         q = rms_norm(q)
         k = rms_norm(k)
-        
-        # Expand KV to match Q heads
-        k = k.expand(B, self.num_heads, L, self.head_dim)
-        v = v.expand(B, self.num_heads, L, self.head_dim)
-        
-        # Flash Attention
-        out = F.scaled_dot_product_attention(q, k, v, is_causal=True)
-        
-        return self.out_proj(out.transpose(1, 2).reshape(B, L, -1))
 
-class OptimizedTransformerLayer(nn.Module):
+        # Handle KV cache
+        if kv_cache is not None:
+            # Concatenate with cached K, V
+            k = torch.cat([kv_cache[0], k], dim=2)
+            v = torch.cat([kv_cache[1], v], dim=2)
+        # Update cache with current K, V
+        new_kv_cache = (k, v)
+
+        # Expand KV to match Q heads
+        k = k.expand(B, self.num_heads, k.size(2), self.head_dim)
+        v = v.expand(B, self.num_heads, v.size(2), self.head_dim)
+
+        # Pytorch's scaled dot product attention, should use flash attention behind the hood
+        Tq = q.size(2)
+        Tk = k.size(2)
+
+        # Full causal mask in training with no kv cache
+        if kv_cache is None or Tq == Tk:
+            out = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+        # No causal mask in inference when generating with single tokens
+        elif Tq == 1:
+            out = F.scaled_dot_product_attention(q, k, v, is_causal=False)
+        # Custom causal mask in inference when generating with chunks
+        else:
+            attn_mask = torch.zeros((Tq, Tk), dtype=torch.bool, device=q.device)
+            prefix_len = Tk - Tq
+            if prefix_len > 0:
+                attn_mask[:, :prefix_len] = True
+            attn_mask[:, prefix_len:] = torch.tril(
+                torch.ones((Tq, Tq), dtype=torch.bool, device=q.device)
+            )
+            out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
+
+        return self.out_proj(out.transpose(1, 2).reshape(B, L, -1)), new_kv_cache
+
+# Transformer block
+class Transformer(nn.Module):
     def __init__(self, dim, num_heads, dim_ff):
         super().__init__()
 
         self.attn = MultiQueryAttention(dim, num_heads)
         self.ffn1 = nn.Linear(dim, dim_ff, bias=False)
         self.ffn2 = nn.Linear(dim_ff, dim, bias=False)
-    
-    def forward(self, x, cos, sin):
-        x = x + self.attn(rms_norm(x), cos, sin)
-        x = x + self.ffn2(F.relu(self.ffn1(rms_norm(x))).square())
-        return x
 
+    def forward(self, x, cos, sin, kv_cache=None):
+        # Attention with kv cache
+        attn, new_kv_cache = self.attn(rms_norm(x), cos, sin, kv_cache)
+        x = x + attn
+        # Uses squared relu for activation
+        x = x + self.ffn2(F.relu(self.ffn1(rms_norm(x))).square())
+        return x, new_kv_cache
+
+# Main chatbot model
 class ChatBot(nn.Module):
     def __init__(self, options={}):
         super().__init__()
-        
+
         # Vocab setup - tiktoken BPE from GPT2
         self.encoding = tiktoken.get_encoding("gpt2")
         self.vocab_size = options.get("vocab_size", 50257)
         self.eos_token_id = self.encoding.encode("<|endoftext|>", allowed_special={"<|endoftext|>"})[0]
-        
+
         # Config
         self.d_model = options.get("d_model", 768)
         self.num_layers = options.get("num_layers", 12)
         self.num_heads = options.get("num_heads", 6)
         self.rotary_seq_len = options.get("rotary_seq_len", 1024)
-        self.overlapping = options.get("overlapping", 1)
-        
+
         # Embedding
         self.embedding = nn.Embedding(self.vocab_size, self.d_model, dtype=torch.bfloat16)
 
         # Transformer decoder layers
         self.transformer = nn.ModuleList([
-            OptimizedTransformerLayer(
+            Transformer(
                 self.d_model,
                 self.num_heads,
                 self.d_model * 4
@@ -107,33 +139,38 @@ class ChatBot(nn.Module):
             torch.nn.init.zeros_(layer.attn.out_proj.weight)
             torch.nn.init.zeros_(layer.ffn2.weight)
         torch.nn.init.zeros_(self.output.weight)
-        
-        # Only use CUDA
-        if not torch.cuda.is_available():
-            raise RuntimeError("CUDA not available but required")
-        torch.backends.cudnn.benchmark = True
-        torch.backends.cuda.matmul.allow_tf32 = True
-        torch.backends.cudnn.allow_tf32 = True
-        torch.set_float32_matmul_precision("high")
-        self.device = torch.device("cuda")
+
+        # Device
+        if torch.cuda.is_available():
+            torch.backends.cudnn.benchmark = True
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            torch.set_float32_matmul_precision("high")
+            self.device = torch.device("cuda")
+        else:
+            self.device = options.get("device", torch.device("cpu"))
         self.to(self.device)
 
         # Precompute cos and sin
         self.cos, self.sin = self._precompute_rotary_embeddings(self.rotary_seq_len, self.d_model // self.num_heads)
-    
+
+        # Init kv cache
+        self.kv_caches = []
+        self.use_kv_cache = False
+
     def _init_weights(self, module):
-        # Yoinked from nanochat basically
+        # Yoinked from nanochat basically, depth-aware weight init
         if isinstance(module, nn.Linear):
             fan_out = module.weight.size(0)
             fan_in = module.weight.size(1)
             std = 1.0 / math.sqrt(fan_in) * min(1.0, math.sqrt(fan_out / fan_in))
-            
+
             torch.nn.init.normal_(module.weight, mean=0.0, std=std)
             if module.bias is not None:
                 torch.nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=1.0)
-    
+
     def _precompute_rotary_embeddings(self, seq_len, head_dim, base=10000):
         # Stride the channels
         channel_range = torch.arange(0, head_dim, 2, dtype=torch.float32, device=self.device)
@@ -159,16 +196,35 @@ class ChatBot(nn.Module):
 
         # Embedding norm
         embedding = rms_norm(embedding)
-        
-        # Transformer forward pass
-        cos = self.cos[:, :, :seq_len, :]
-        sin = self.sin[:, :, :seq_len, :]
 
+        # Get position for RoPE
+        if self.use_kv_cache and len(self.kv_caches) > 0 and self.kv_caches[0] is not None:
+            # When using cache, position starts from cache length
+            cache_len = self.kv_caches[0][0].size(2)
+            cos = self.cos[:, :, cache_len:cache_len + seq_len, :]
+            sin = self.sin[:, :, cache_len:cache_len + seq_len, :]
+        else:
+            # No cache or not inference, use positions from 0
+            cos = self.cos[:, :, :seq_len, :]
+            sin = self.sin[:, :, :seq_len, :]
+
+        # Initialize cache list
+        new_kv_caches = []
+
+        # Transformer forward pass
         for i, layer in enumerate(self.transformer):
-            if i % 3 != 2:
-                embedding = checkpoint(layer, embedding, cos, sin, use_reentrant=False)
+            if self.use_kv_cache:
+                layer_cache = self.kv_caches[i] if i < len(self.kv_caches) else None
+                embedding, new_kv_cache = layer(embedding, cos, sin, layer_cache)
+                new_kv_caches.append(new_kv_cache)
             else:
-                embedding = layer(embedding, cos, sin)
+                if i % 3 != 2:
+                    embedding, _ = checkpoint(layer, embedding, cos, sin, None, use_reentrant=False)
+                else:
+                    embedding, _ = layer(embedding, cos, sin, None)
+
+        # Update cache list
+        self.kv_caches = new_kv_caches
 
         # Final norm
         embedding = rms_norm(embedding)
@@ -181,7 +237,7 @@ class ChatBot(nn.Module):
         output = softcap * torch.tanh(output / softcap)
         
         return output
-    
+
     def train_model(self, data_loader, sequence_length=1024, batch_size=4, gradient_accumulation_steps=128, T_max=5277):
         print(f"Training with batch_size={batch_size}, gradient_accumulation_steps={gradient_accumulation_steps}")
         print(f"Effective batch size: {batch_size * gradient_accumulation_steps}")
@@ -236,7 +292,7 @@ class ChatBot(nn.Module):
             
             # Pre-create all sequences 
             sequences = []
-            for start_idx in range(0, len(tokens) - sequence_length, sequence_length // self.overlapping):
+            for start_idx in range(0, len(tokens) - sequence_length, sequence_length):
                 sequence = tokens[start_idx:start_idx + sequence_length]
                 if len(sequence) == sequence_length:
                     sequences.append(sequence)
@@ -302,16 +358,25 @@ class ChatBot(nn.Module):
         memory=[]
     ):
         self.eval()
+        # Enable kv cache and reset previous kv caches
+        self.kv_caches = []
+        self.use_kv_cache = True
         
-        with torch.no_grad():
+        with torch.inference_mode():
             current_tokens = memory + self.text_to_tokens(prompt)
 
             # Stack in case a char is made up of multiple tokens
             word_stack = []
 
             for i in range(max_length):
-                current_tokens = current_tokens[-context_window:] if len(current_tokens) > context_window else current_tokens
-                input_tensor = torch.tensor(current_tokens, device=self.device).unsqueeze(0)
+                if i == 0 or len(self.kv_caches) == 0:
+                    # First iteration: process full context
+                    input_tokens = current_tokens[-context_window:]
+                else:
+                    # Subsequent: only process new token
+                    input_tokens = [current_tokens[-1]]
+
+                input_tensor = torch.tensor(input_tokens, device=self.device).unsqueeze(0)
 
                 # Forward pass
                 with autocast(device_type=self.device.type, dtype=torch.bfloat16):
@@ -339,7 +404,7 @@ class ChatBot(nn.Module):
                             else:
                                 scaled_logits[token_id] *= penalty
 
-                # Top-k sampling
+                # Top-k scaling
                 top_k_values, top_k_indices = torch.topk(scaled_logits, k=topk)
                 top_k_probs = torch.softmax(top_k_values, dim=0)
 
@@ -371,30 +436,17 @@ class ChatBot(nn.Module):
                 ):
                     print(decoded_word, end="")
                     word_stack = []
-        
-        return current_tokens[-context_window:]
+                
+                # Reset kv cache if too long
+                if len(self.kv_caches) > 0 and self.kv_caches[0][0].size(2) >= context_window:
+                    self.kv_caches = []
+                    current_tokens = current_tokens[-context_window:]
 
-    def save(self, path="./chatbot.pth"):
-        torch.save({
-            "model_state_dict": self.state_dict(),
-            "d_model": self.d_model,
-            "num_layers": self.num_layers,
-            "num_heads": self.num_heads,
-            "vocab_size": self.vocab_size,
-            "rotary_seq_len": self.rotary_seq_len,
-            "overlapping": self.overlapping,
-            "eos_token_id": self.eos_token_id
-        }, path)
-    
-    def load(self, path="./chatbot.pth"):
-        checkpoint = torch.load(path, map_location=self.device)
-        self.load_state_dict(checkpoint["model_state_dict"])
-    
-    def text_to_tokens(self, text):
-        return self.encoding.encode(text, allowed_special={"<|endoftext|>"})
-    
-    def tokens_to_text(self, tokens):
-        return self.encoding.decode(tokens)
+        # Disable kv cache when done generating and clear kv cache
+        self.use_kv_cache = False
+        self.kv_caches = []
+
+        return current_tokens[-context_window:]
 
     def validate_model(self, data_loader, sequence_length=1024, batch_size=5):
         print(f"Running validation with batch_size={batch_size}, sequence_length={sequence_length}")
@@ -420,7 +472,7 @@ class ChatBot(nn.Module):
                 
                 # Pre-create all sequences (same as training)
                 sequences = []
-                for start_idx in range(0, len(tokens) - sequence_length, sequence_length // self.overlapping):
+                for start_idx in range(0, len(tokens) - sequence_length, sequence_length):
                     sequence = tokens[start_idx:start_idx + sequence_length]
                     if len(sequence) == sequence_length:
                         sequences.append(sequence)
@@ -463,10 +515,24 @@ class ChatBot(nn.Module):
         print(f"Total tokens: {total_tokens}")
         print(f"Average Loss: {avg_loss:.4f}")
         print(f"Perplexity: {perplexity:.2f}")
-        
-        return {
-            "loss": avg_loss,
-            "perplexity": perplexity,
-            "total_tokens": total_tokens,
-            "num_segments": num_segments
-        }
+
+    def save(self, path="./chatbot.pth"):
+        torch.save({
+            "model_state_dict": self.state_dict(),
+            "d_model": self.d_model,
+            "num_layers": self.num_layers,
+            "num_heads": self.num_heads,
+            "vocab_size": self.vocab_size,
+            "rotary_seq_len": self.rotary_seq_len,
+            "eos_token_id": self.eos_token_id
+        }, path)
+    
+    def load(self, path="./chatbot.pth"):
+        checkpoint = torch.load(path, map_location=self.device)
+        self.load_state_dict(checkpoint["model_state_dict"])
+    
+    def text_to_tokens(self, text):
+        return self.encoding.encode(text, allowed_special={"<|endoftext|>"})
+    
+    def tokens_to_text(self, tokens):
+        return self.encoding.decode(tokens)
