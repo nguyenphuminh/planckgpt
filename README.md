@@ -39,7 +39,7 @@ To pretrain the model from scratch, run:
 python train.py
 ```
 
-The model will train with 3b+ tokens with 20 150m-token segments (estimated 45 hours on my Laptop RTX 5070), and after each epoch it will save the current model to `./chatbot.pth`.
+The model will train with 3b+ tokens with 20 150m-token segments (estimated 40 hours on my Laptop RTX 5070), and after each epoch it will save the current model to `./chatbot.pth`.
 
 ## Finetuning
 
@@ -67,7 +67,7 @@ Currently it uses:
 
 and is trained with:
 
-* Dataset: Fineweb (~3b tokens) with no overlapping.
+* Dataset: Fineweb-edu (~3b tokens) with no overlapping.
 * Context Window: 1024 tokens.
 * Batch Size: 4 (effective batch size: 512 with gradient accumulation).
 * Muon optimizer for transformer weights, 8-bit AdamW optimizer for embedding and output projection.

@@ -218,7 +218,7 @@ class ChatBot(nn.Module):
                 embedding, new_kv_cache = layer(embedding, cos, sin, layer_cache)
                 new_kv_caches.append(new_kv_cache)
             else:
-                if i % 3 != 2:
+                if i % 4 == 0:
                     embedding, _ = checkpoint(layer, embedding, cos, sin, None, use_reentrant=False)
                 else:
                     embedding, _ = layer(embedding, cos, sin, None)
@@ -254,7 +254,7 @@ class ChatBot(nn.Module):
         
         # AdamW for embedding/linear weights
         linear_params = [self.embedding.weight, self.output.weight]
-        adam_opt = Adam8bit(linear_params, lr=0.008, betas=(0.65, 0.95), weight_decay=0.0)
+        adam_opt = Adam8bit(linear_params, lr=0.008, betas=(0.65, 0.95))
         adam_cooldown_scheduler = LinearLR(adam_opt, start_factor=1.0, end_factor=0.1, total_iters=cooldown_steps)
 
         # Muon for transformer params
