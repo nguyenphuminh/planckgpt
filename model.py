@@ -7,7 +7,8 @@ from torch.optim.lr_scheduler import LinearLR
 from torch.utils.checkpoint import checkpoint
 from torch.amp import autocast
 from muon import Muon, get_muon_momentum
-import bitsandbytes as bnb
+from bitsandbytes.optim import Adam8bit
+import numpy as np
 
 # RMS norm with no learnable params
 def rms_norm(x):
@@ -16,9 +17,9 @@ def rms_norm(x):
 # Rotate embeddings for RoPE
 def apply_rotary_emb(x, cos, sin):
     x1, x2 = torch.chunk(x, 2, dim=-1)
-    o1 = x1 * cos - x2 * sin
-    o2 = x2 * cos + x1 * sin
-    return torch.cat((o1, o2), dim=-1)
+    y1 = x1 * cos + x2 * sin
+    y2 = x1 * (-sin) + x2 * cos
+    return torch.cat((y1, y2), dim=-1)
 
 # MQA for less memory use
 class MultiQueryAttention(nn.Module):
@@ -143,9 +144,8 @@ class ChatBot(nn.Module):
         # Device
         if torch.cuda.is_available():
             torch.backends.cudnn.benchmark = True
-            torch.backends.cuda.matmul.allow_tf32 = True
-            torch.backends.cudnn.allow_tf32 = True
-            torch.set_float32_matmul_precision("high")
+            torch.backends.cuda.matmul.fp32_precision = "tf32"
+            torch.backends.cudnn.fp32_precision = "tf32"
             self.device = torch.device("cuda")
         else:
             self.device = options.get("device", torch.device("cpu"))
@@ -254,8 +254,8 @@ class ChatBot(nn.Module):
         
         # AdamW for embedding/linear weights
         linear_params = [self.embedding.weight, self.output.weight]
-        adamw_opt = bnb.optim.AdamW8bit(linear_params, lr=0.008, betas=(0.65, 0.95), weight_decay=0.0)
-        adamw_cooldown_scheduler = LinearLR(adamw_opt, start_factor=1.0, end_factor=0.1, total_iters=cooldown_steps)
+        adam_opt = Adam8bit(linear_params, lr=0.008, betas=(0.65, 0.95), weight_decay=0.0)
+        adam_cooldown_scheduler = LinearLR(adam_opt, start_factor=1.0, end_factor=0.1, total_iters=cooldown_steps)
 
         # Muon for transformer params
         transformer_params = [p for n, p in self.named_parameters() if "embedding" not in n and "output" not in n]
@@ -271,8 +271,8 @@ class ChatBot(nn.Module):
 
             # AdamW step
             if optimizer_step % 2 != 0:
-                adamw_opt.step()
-                adamw_opt.zero_grad(set_to_none=True)
+                adam_opt.step()
+                adam_opt.zero_grad(set_to_none=True)
 
             # Muon step
             for group in muon_opt.param_groups:
@@ -282,20 +282,19 @@ class ChatBot(nn.Module):
 
             # LR scheduler steps
             if optimizer_step > stable_steps:
-                adamw_cooldown_scheduler.step()
+                adam_cooldown_scheduler.step()
                 muon_cooldown_scheduler.step()
 
         for segment_index, segment in enumerate(data_loader):
             # Encode segment to tokens
-            tokens = self.text_to_tokens(segment)
+            tokens = np.array(self.text_to_tokens(segment))
             print(f"Segment {segment_index + 1}: {len(segment)} chars -> {len(tokens)} tokens")
             
-            # Pre-create all sequences 
-            sequences = []
-            for start_idx in range(0, len(tokens) - sequence_length, sequence_length):
-                sequence = tokens[start_idx:start_idx + sequence_length]
-                if len(sequence) == sequence_length:
-                    sequences.append(sequence)
+            # Truncate to fit exact number of sequences
+            num_sequences = len(tokens) // sequence_length
+            truncated = tokens[:num_sequences * sequence_length]
+            # Reshape into 2D array
+            sequences = truncated.reshape(num_sequences, sequence_length)
             
             print(f"Segment {segment_index + 1}: Pre-computed {len(sequences)} sequences in memory")
 
@@ -305,11 +304,11 @@ class ChatBot(nn.Module):
             total_loss = 0
             num_batches = 0
             
-            adamw_opt.zero_grad(set_to_none=True)
+            adam_opt.zero_grad(set_to_none=True)
             muon_opt.zero_grad(set_to_none=True)
             
             for batch_start in range(0, len(sequences), batch_size):
-                batch_sequences = torch.tensor(sequences[batch_start:batch_start + batch_size], device=self.device)
+                batch_sequences = torch.tensor(sequences[batch_start:batch_start + batch_size], dtype=torch.long, device=self.device)
                 input_tokens = batch_sequences[:, :-1]
                 target_tokens = batch_sequences[:, 1:]
                 
@@ -338,7 +337,7 @@ class ChatBot(nn.Module):
 
             # Get log info
             avg_loss = total_loss / num_batches if num_batches > 0 else 0
-            adamw_current_lr = adamw_opt.param_groups[0]["lr"]
+            adamw_current_lr = adam_opt.param_groups[0]["lr"]
             muon_current_lr = muon_opt.param_groups[0]["lr"]
 
             # Log and save
