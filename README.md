@@ -1,6 +1,6 @@
 # PlanckGPT
 
-PlanckGPT (planck length refence :D) is my attempt to make a tiny language model from scratch mostly for fun and educational purposes, but also to see how far a consumer-level computer can go in AI development. It has about 150m parameters and is pretrained on roughly 3 billion tokens of the Fineweb dataset and finetuned on 430m tokens of the Smol-smoltalk dataset. This is small compared to modern LLMs' standards, which also explains why it is goofy when you use it (lol), but you can definitely train this on a mid-range card for just 1-2 days, and it can still generate proper English and data that should be related to the user's prompt (its pretrain performance roughly matches that of GPT2 just so you know).
+PlanckGPT (planck length refence :D) is my attempt to make a tiny language model from scratch mostly for fun and educational purposes, but also to see how far a consumer-level computer can go in AI development. It has about 150m parameters and is pretrained on roughly 3 billion tokens of the Fineweb-edu dataset and finetuned on 430m tokens of the Smol-smoltalk dataset. This is small compared to modern LLMs' standards, which also explains why it is goofy when you use it (lol), but you can definitely train this on a mid-range card for just 1-2 days, and it can still generate proper English and data that should be related to the user's prompt (its pretrain performance roughly matches that of GPT2 just so you know).
 
 ## Setup
 
@@ -14,11 +14,11 @@ source venv/scripts/activate
 # or "./venv/scripts/activate" if you are on windows
 
 # Install packages (once)
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu129
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu130
 pip install tiktoken datasets bitsandbytes
 ```
 
-Of course, you should already install compatible CUDA and Python versions, I currently use Python 3.13 and CUDA 13 (which is compatible with CUDA 12.9 mentioned above).
+Of course, you should already install compatible CUDA and Python versions, I currently use Python 3.13 and CUDA 13.
 
 ## Running PlanckGPT
 
@@ -67,18 +67,18 @@ Currently it uses:
 
 and is trained with:
 
-* Dataset: Fineweb-edu (~3b tokens) with no overlapping.
+* Dataset: Fineweb-edu (~3b tokens).
 * Context Window: 1024 tokens.
 * Batch Size: 4 (effective batch size: 512 with gradient accumulation).
 * Muon optimizer for transformer weights, 8-bit AdamW optimizer for embedding and output projection.
 * Stable LR for the first 55% of the steps, LinearLR decay to 0.1x for the rest.
 * BF16 mixed precision training and other Blackwell-specific features.
 * Training with torch.compile on "max-autotune" mode.
-* Gradient checkpointing in 2/3 of the transformer layers.
+* Gradient checkpointing.
 
 and is finetuned with:
 
-* Dataset: Smol-smoltalk (~430m tokens) with no overlapping.
+* Dataset: Smol-smoltalk (~430m tokens), alpaca-cleaned, and some knowledge about its identity.
 * Same configuration as pretraining.
 
 and generates text with:

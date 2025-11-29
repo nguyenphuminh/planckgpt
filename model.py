@@ -218,7 +218,7 @@ class ChatBot(nn.Module):
                 embedding, new_kv_cache = layer(embedding, cos, sin, layer_cache)
                 new_kv_caches.append(new_kv_cache)
             else:
-                if i % 4 == 0:
+                if i % 3 == 0:
                     embedding, _ = checkpoint(layer, embedding, cos, sin, None, use_reentrant=False)
                 else:
                     embedding, _ = layer(embedding, cos, sin, None)
@@ -238,7 +238,16 @@ class ChatBot(nn.Module):
         
         return output
 
-    def train_model(self, data_loader, sequence_length=1024, batch_size=4, gradient_accumulation_steps=128, T_max=5277):
+    def train_model(
+        self,
+        data_loader,
+        sequence_length=1024,
+        batch_size=4,
+        gradient_accumulation_steps=128,
+        adam_lr=0.008,
+        muon_lr=0.06,
+        T_max=5277
+    ):
         print(f"Training with batch_size={batch_size}, gradient_accumulation_steps={gradient_accumulation_steps}")
         print(f"Effective batch size: {batch_size * gradient_accumulation_steps}")
 
@@ -254,12 +263,12 @@ class ChatBot(nn.Module):
         
         # AdamW for embedding/linear weights
         linear_params = [self.embedding.weight, self.output.weight]
-        adam_opt = Adam8bit(linear_params, lr=0.008, betas=(0.65, 0.95))
+        adam_opt = Adam8bit(linear_params, lr=adam_lr, betas=(0.65, 0.95))
         adam_cooldown_scheduler = LinearLR(adam_opt, start_factor=1.0, end_factor=0.1, total_iters=cooldown_steps)
 
         # Muon for transformer params
         transformer_params = [p for n, p in self.named_parameters() if "embedding" not in n and "output" not in n]
-        muon_opt = Muon(transformer_params, lr=0.06, momentum=0.95)
+        muon_opt = Muon(transformer_params, lr=muon_lr, momentum=0.95)
         muon_cooldown_scheduler = LinearLR(muon_opt, start_factor=1.0, end_factor=0.1, total_iters=cooldown_steps)
 
         # Track optimizer step for Muon momentum update
