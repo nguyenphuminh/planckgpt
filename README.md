@@ -5,7 +5,6 @@ PlanckGPT (planck length refence :D) is my attempt to make a tiny language model
 ## Setup
 
 Setup venv and install necessary packages:
-
 ```sh
 # Create and activate venv
 python -m venv venv
@@ -14,11 +13,11 @@ source venv/scripts/activate
 # or "./venv/scripts/activate" if you are on windows
 
 # Install packages (once)
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu129
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu130
 pip install tiktoken datasets bitsandbytes
 ```
 
-Of course, you should already install compatible CUDA and Python versions, I currently use Python 3.13 and CUDA 13 (which is compatible with CUDA 12.9 mentioned above).
+Of course, you should already install compatible CUDA and Python versions, I currently use Python 3.13 and CUDA 13.
 
 ## Running PlanckGPT
 
@@ -39,7 +38,7 @@ To pretrain the model from scratch, run:
 python train.py
 ```
 
-The model will train with 3b+ tokens with 20 150m-token segments (estimated 45 hours on my Laptop RTX 5070), and after each epoch it will save the current model to `./chatbot.pth`.
+The model will train with 3b+ tokens with 20 150m-token segments (estimated 40 hours on my Laptop RTX 5070), and after each epoch it will save the current model to `./chatbot.pth`.
 
 ## Finetuning
 
@@ -70,7 +69,7 @@ and is trained with:
 * Dataset: Fineweb (~3b tokens) with no overlapping.
 * Context Window: 1024 tokens.
 * Batch Size: 4 (effective batch size: 512 with gradient accumulation).
-* Muon optimizer for transformer weights, 8-bit AdamW optimizer for embedding and output projection.
+* Muon optimizer for transformer weights, 8-bit Adam optimizer for embedding and output projection.
 * Stable LR for the first 55% of the steps, LinearLR decay to 0.1x for the rest.
 * BF16 mixed precision training and other Blackwell-specific features.
 * Training with torch.compile on "max-autotune" mode.

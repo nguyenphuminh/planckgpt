@@ -21,7 +21,7 @@ if __name__ == "__main__":
         raise RuntimeError("No existing model found to finetune")
 
     # Finetune
-    chatbot.train_model(load_finetune_data(), T_max=820)
+    chatbot.train_model(load_finetune_data(), total_steps=820)
     
     # Final save
     print("Final save to chatbot.pth")
