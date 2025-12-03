@@ -4,7 +4,7 @@ def load_data(
     start=0,
     end=4470000,
     step=223500,
-    dataset_name="HuggingFaceFW/fineweb",
+    dataset_name="HuggingFaceFW/fineweb-edu",
     subset="sample-10BT",
     split="train"
 ):
@@ -36,7 +36,7 @@ def load_val_data(
     start=4470000,
     end=4485000,
     step=15000,
-    dataset_name="HuggingFaceFW/fineweb",
+    dataset_name="HuggingFaceFW/fineweb-edu",
     subset="sample-10BT",
     split="train"
 ):

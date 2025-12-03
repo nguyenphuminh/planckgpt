@@ -17,9 +17,9 @@ def rms_norm(x):
 # Rotate embeddings for RoPE
 def apply_rotary_emb(x, cos, sin):
     x1, x2 = torch.chunk(x, 2, dim=-1)
-    o1 = x1 * cos - x2 * sin
-    o2 = x2 * cos + x1 * sin
-    return torch.cat((o1, o2), dim=-1)
+    y1 = x1 * cos + x2 * sin
+    y2 = x1 * (-sin) + x2 * cos
+    return torch.cat((y1, y2), dim=-1)
 
 # MQA for less memory use
 class MultiQueryAttention(nn.Module):
