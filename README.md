@@ -78,7 +78,7 @@ and is trained with:
 and is finetuned with:
 
 * Dataset: Smol-smoltalk (~430m tokens) with no overlapping.
-* Same configuration as pretraining.
+* Same configuration as pretraining, but with 80% stable LR range.
 
 and generates text with:
 
