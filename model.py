@@ -8,7 +8,6 @@ from torch.utils.checkpoint import checkpoint
 from torch.amp import autocast
 from muon import Muon, get_muon_momentum
 from bitsandbytes.optim import Adam8bit
-import numpy as np
 
 # RMS norm with no learnable params
 def rms_norm(x):
@@ -299,7 +298,7 @@ class ChatBot(nn.Module):
 
         for segment_index, segment in enumerate(data_loader):
             # Encode segment to tokens
-            tokens = np.array(self.text_to_tokens(segment))
+            tokens = torch.tensor(self.text_to_tokens(segment)).pin_memory()
             print(f"Segment {segment_index + 1}: {len(segment)} chars -> {len(tokens)} tokens")
             
             # Truncate to fit exact number of sequences
@@ -320,7 +319,7 @@ class ChatBot(nn.Module):
             muon_opt.zero_grad(set_to_none=True)
 
             for batch_start in range(0, len(sequences), batch_size):
-                batch_sequences = torch.tensor(sequences[batch_start:batch_start + batch_size], dtype=torch.long, device=self.device)
+                batch_sequences = sequences[batch_start:batch_start + batch_size].to(self.device, non_blocking=True)
                 input_tokens = batch_sequences[:, :-1]
                 target_tokens = batch_sequences[:, 1:]
 
