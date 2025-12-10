@@ -66,7 +66,7 @@ Currently it uses:
 
 and is trained with:
 
-* Dataset: Fineweb-edu (~3b tokens) with no overlapping.
+* Dataset: Fineweb-edu (~3b tokens).
 * Context Window: 1024 tokens.
 * Batch Size: 4 (effective batch size: 512 with gradient accumulation).
 * Muon optimizer for transformer weights, 8-bit Adam optimizer for embedding and output projection.
@@ -77,7 +77,11 @@ and is trained with:
 
 and is finetuned with:
 
-* Dataset: Smol-smoltalk (~430m tokens) with no overlapping.
+* Datasets:
+    * Smol-smoltalk (460k rows).
+    * MMLU (100k rows).
+    * GSM8K (8k rows).
+    * Custom identity json (192 rows, repeated 3 times).
 * Same configuration as pretraining, but with 80% stable LR range.
 
 and generates text with:

@@ -73,28 +73,28 @@ def load_finetune_data(
 ):
     all_data = []
 
-    # Define datasets with row limits and specific subsets
+    # Define datasets with row limits
+    # Format: (dataset_name, config/subset, split, max_rows)
+    # config/subset is None if not needed
     datasets_config = [
-        ("HuggingFaceTB/smol-smoltalk", "train", None, 460000),
-        ("cais/mmlu", "auxiliary_train", None, 100000),
+        ("HuggingFaceTB/smol-smoltalk", None, "train", 460000),
+        ("cais/mmlu", "auxiliary_train", "train", 100000),
         ("openai/gsm8k", "main", "train", 8000),
     ]
 
     # Load HuggingFace datasets with row limits
-    for config in datasets_config:
-        if len(config) == 4:
-            dataset_name, subset_name, split, max_rows = config
-        else:
-            dataset_name, split, max_rows = config
-            subset_name = None
+    for dataset_name, config_name, split, max_rows in datasets_config:
+        print(f"Loading {dataset_name}" + (f" ({config_name})" if config_name else "") + f" (max {max_rows} rows)...")
         
-        print(f"Loading {dataset_name}" + (f" ({subset_name})" if subset_name else "") + f" (max {max_rows} rows)...")
-        
-        # Load dataset with proper subset handling
-        if subset_name:
-            dataset = load_dataset(dataset_name, subset_name, split=split) if split else load_dataset(dataset_name, subset_name)
-        else:
+        # Load dataset with proper config/subset and split handling
+        if config_name and split:
+            dataset = load_dataset(dataset_name, config_name, split=split)
+        elif config_name:
+            dataset = load_dataset(dataset_name, config_name, split="train")
+        elif split:
             dataset = load_dataset(dataset_name, split=split)
+        else:
+            dataset = load_dataset(dataset_name, split="train")
         
         # Limit to max_rows
         if len(dataset) > max_rows:
@@ -118,8 +118,8 @@ def load_finetune_data(
     print(f"  {identity_json_path}: {identity_size} samples (3 epochs)")
     all_data.append(identity_dataset)
 
-    # Concatenate datasets
-    combined_dataset = concatenate_datasets(all_data)
+    # Concatenate datasets and shuffle
+    combined_dataset = concatenate_datasets(all_data).shuffle(seed=42)
     total_size = len(combined_dataset)
     print(f"\nCombined dataset: {total_size} samples")
 
