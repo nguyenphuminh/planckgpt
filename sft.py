@@ -1,7 +1,7 @@
 import torch
 import os
 from model import ChatBot
-from data import load_finetune_data
+from data import load_sft_data
 
 if __name__ == "__main__":
     torch.cuda.empty_cache()
@@ -21,7 +21,14 @@ if __name__ == "__main__":
         raise RuntimeError("No existing model found to finetune")
 
     # Finetune
-    chatbot.train_model(load_finetune_data(), stable_range=0.8, total_steps=797)
+    chatbot.train_model(
+        load_sft_data(),
+        adam_lr=0.00016,
+        muon_lr=0.0012,
+        stable_range=0.0,
+        max_decay=0.0,
+        total_steps=20
+    )
     
     # Final save
     print("Final save to chatbot.pth")
