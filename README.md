@@ -1,6 +1,6 @@
 # PlanckGPT
 
-PlanckGPT (planck length refence :D) is my attempt to make a tiny language model from scratch mostly for fun and educational purposes, but also to see how far a consumer-level computer can go in AI development. It has about 150m parameters and is pretrained on roughly 3 billion tokens of the Fineweb-edu dataset and finetuned on 430m tokens of the Smol-smoltalk dataset. This is small compared to modern LLMs' standards, which also explains why it is goofy when you use it (lol), but you can definitely train this on a mid-range card for just 1-2 days, and it can still generate proper English and data that should be related to the user's prompt (its pretrain performance roughly matches that of GPT2 just so you know).
+PlanckGPT (planck length reference :D) is my attempt to make a tiny language model from scratch mostly for fun and educational purposes, but also to see how far a consumer-level computer can go in AI development. It has about 150m parameters and is pretrained on roughly 3 billion tokens of the Fineweb-edu dataset and finetuned on 430m tokens of the Smol-smoltalk dataset. This is small compared to modern LLMs' standards, which also explains why it is goofy when you use it (lol), but you can definitely train this on a mid-range card for just 1-2 days, and it can still generate proper English and data that should be related to the user's prompt (its pretrain performance roughly matches that of GPT2 just so you know).
 
 ## Setup
 
