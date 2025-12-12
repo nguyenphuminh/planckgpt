@@ -362,8 +362,6 @@ class ChatBot(nn.Module):
         prompt,
         context_window=1024,
         max_length=10240,
-        repetition_penalty=1.1,
-        repetition_penalty_range=64,
         temperature=0.7,
         topk=50,
         memory=[]
@@ -396,24 +394,6 @@ class ChatBot(nn.Module):
 
                 # Apply temperature scaling
                 scaled_logits = logits / temperature
-
-                # Repetition penalty
-                if len(current_tokens) > 0:
-                    # Count frequency of each token in recent context
-                    recent_tokens = current_tokens[-repetition_penalty_range:]
-                    token_counts = {}
-                    for token in recent_tokens:
-                        token_counts[token] = token_counts.get(token, 0) + 1
-                    
-                    # Apply penalty based on frequency
-                    for token_id, count in token_counts.items():
-                        if token_id < len(scaled_logits):
-                            # Penalty increases with frequency
-                            penalty = repetition_penalty ** count
-                            if scaled_logits[token_id] > 0:
-                                scaled_logits[token_id] /= penalty
-                            else:
-                                scaled_logits[token_id] *= penalty
 
                 # Top-k scaling
                 top_k_values, top_k_indices = torch.topk(scaled_logits, k=topk)
