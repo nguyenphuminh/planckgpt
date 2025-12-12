@@ -361,7 +361,7 @@ class ChatBot(nn.Module):
         self,
         prompt,
         context_window=1024,
-        max_length=10240,
+        max_length=4096,
         temperature=0.7,
         topk=50,
         memory=[]
@@ -408,9 +408,10 @@ class ChatBot(nn.Module):
                 if (
                     # Stop on eos token and conversation overlap
                     next_token_id == self.eos_token_id or
-                    # Stop on "User: or Assistant:"
-                    (next_token_id == 25 and current_tokens[-1] in [12982, 48902])
+                    # Stop on "User: or Assistant:" or "UserUser"-ish hallucinations
+                    ((next_token_id == 25 or next_token_id in [12982, 48902]) and current_tokens[-1] in [12982, 48902])
                 ):
+                    current_tokens.pop()
                     break
 
                 # Push newest token
