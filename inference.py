@@ -26,7 +26,7 @@ if __name__ == "__main__":
 
     # Prompt
     memory = []
-    is_mem_enabled = False
+    is_mem_enabled = True
 
     while True:
         prompt = input("\n\n\033[32mPrompt (type \"/help\" to see a list of commands): ")
@@ -37,9 +37,9 @@ if __name__ == "__main__":
             print("All commands:")
             print("/help       - View a list of commands")
             print("/clear      - Clear the console")
-            print("/enablemem  - Enable chat memory, not recommended for now")
+            print("/enablemem  - Enable chat memory (enabled by default)")
             print("/disablemem - Disable chat memory")
-            print("/clearmem   - Clear chat memory")
+            print("/clearmem   - Clear chat memory (use this if it hallucinates)")
             print("/showmem    - Log out chat memory")
         elif prompt == "/clear":
             print("\033c", end="")
