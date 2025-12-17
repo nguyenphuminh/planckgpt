@@ -4,7 +4,7 @@ from datasets import load_dataset, Dataset, concatenate_datasets
 def load_data(
     start=0,
     end=4470000,
-    step=223500,
+    step=145018,
     dataset_name="HuggingFaceFW/fineweb-edu",
     subset="sample-10BT",
     split="train"
@@ -306,3 +306,4 @@ def load_sft_data(
         combined_text = "".join(conversation_parts)
         
         yield combined_text
+
