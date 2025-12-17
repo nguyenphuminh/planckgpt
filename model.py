@@ -1,46 +1,104 @@
 import math
 import tiktoken
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.optim.lr_scheduler import LinearLR
-from torch.utils.checkpoint import checkpoint
-from torch.amp import autocast
-from muon import Muon, get_muon_momentum
-from bitsandbytes.optim import Adam8bit
+import jax
+import jax.numpy as jnp
+import flax.nnx as nnx
+import optax
 import numpy as np
+import functools
 
 # RMS norm with no learnable params
 def rms_norm(x):
-    return F.rms_norm(x, (x.size(-1),))
+    return x * jax.lax.rsqrt(jnp.mean(x ** 2, axis=-1, keepdims=True) + 1e-6)
 
 # Rotate embeddings for RoPE
 def apply_rotary_emb(x, cos, sin):
-    x1, x2 = torch.chunk(x, 2, dim=-1)
+    x1, x2 = jnp.split(x, 2, axis=-1)
     y1 = x1 * cos + x2 * sin
     y2 = x1 * (-sin) + x2 * cos
-    return torch.cat((y1, y2), dim=-1)
+    return jnp.concat([y1, y2], axis=-1)
+
+# Calculate cos and sin for RoPE
+def compute_rotary_embeddings(seq_len, head_dim, base=10000):
+    channel_range = jnp.arange(0, head_dim, 2, dtype=jnp.float32)
+    inv_freq = 1.0 / (base ** (channel_range / head_dim))
+
+    t = jnp.arange(seq_len, dtype=jnp.float32)
+    freqs = jnp.outer(t, inv_freq)
+    cos, sin = jnp.cos(freqs), jnp.sin(freqs)
+
+    # After we have used float32 for more accurate cos and sin, convert to bfloat16
+    cos, sin = cos.astype(jnp.bfloat16), sin.astype(jnp.bfloat16)
+    cos, sin = cos[None, :, None, :], sin[None, :, None, :]
+    return cos, sin
+
+# Depth aware init function, inspired by nanochat
+def depth_aware_init(key, shape, dtype):
+    if len(shape) == 2:
+        fan_in, fan_out = shape
+        std = 1.0 / math.sqrt(fan_in) * min(1.0, math.sqrt(fan_out / fan_in))
+    else:
+        # Fallback for non-2D
+        fan_in = shape[0]
+        std = 1.0 / math.sqrt(fan_in)
+    return jax.random.normal(key, shape, dtype=dtype) * std
 
 # MQA for less memory use
-class MultiQueryAttention(nn.Module):
-    def __init__(self, dim, num_heads):
-        super().__init__()
+class MultiQueryAttention(nnx.Module):
+    def __init__(self, dim, num_heads, rngs):
         assert dim % num_heads == 0
-        
+
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
 
-        self.q_proj = nn.Linear(dim, dim, bias=False)
-        self.k_proj = nn.Linear(dim, self.head_dim, bias=False)
-        self.v_proj = nn.Linear(dim, self.head_dim, bias=False)
-        self.out_proj = nn.Linear(dim, dim, bias=False)
+        self.q_proj = nnx.Linear(
+            dim,
+            dim,
+            kernel_init=depth_aware_init,
+            use_bias=False,
+            dtype=jnp.bfloat16,
+            param_dtype=jnp.bfloat16,
+            rngs=rngs
+        )
 
-    def forward(self, x, cos, sin, kv_cache=None):
+        self.k_proj = nnx.Linear(
+            dim,
+            self.head_dim,
+            kernel_init=depth_aware_init,
+            use_bias=False,
+            dtype=jnp.bfloat16,
+            param_dtype=jnp.bfloat16,
+            rngs=rngs
+        )
+
+        self.v_proj = nnx.Linear(
+            dim,
+            self.head_dim,
+            kernel_init=depth_aware_init,
+            use_bias=False,
+            dtype=jnp.bfloat16,
+            param_dtype=jnp.bfloat16,
+            rngs=rngs
+        )
+
+        self.out_proj = nnx.Linear(
+            dim,
+            dim,
+            kernel_init=nnx.initializers.zeros,
+            use_bias=False,
+            dtype=jnp.bfloat16,
+            param_dtype=jnp.bfloat16,
+            rngs=rngs
+        )
+
+    def __call__(self, x, cos, sin, kv_cache=None):
+        # Init utils
         B, L, _ = x.shape
 
-        q = self.q_proj(x).view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
-        k = self.k_proj(x).view(B, L, 1, self.head_dim).transpose(1, 2)
-        v = self.v_proj(x).view(B, L, 1, self.head_dim).transpose(1, 2)
+        # Get q, k, v
+        q = self.q_proj(x).reshape(B, L, self.num_heads, self.head_dim)
+        k = self.k_proj(x).reshape(B, L, 1, self.head_dim)
+        v = self.v_proj(x).reshape(B, L, 1, self.head_dim)
 
         # RoPE
         q = apply_rotary_emb(q, cos, sin)
@@ -52,61 +110,82 @@ class MultiQueryAttention(nn.Module):
 
         # Handle KV cache
         if kv_cache is not None:
-            # Concatenate with cached K, V
-            k = torch.cat([kv_cache[0], k], dim=2)
-            v = torch.cat([kv_cache[1], v], dim=2)
-        # Update cache with current K, V
+            k = jnp.concat([kv_cache[0], k], axis=1)
+            v = jnp.concat([kv_cache[1], v], axis=1)
         new_kv_cache = (k, v)
 
         # Expand KV to match Q heads
-        k = k.expand(B, self.num_heads, k.size(2), self.head_dim)
-        v = v.expand(B, self.num_heads, v.size(2), self.head_dim)
+        k = jnp.broadcast_to(k, (B, k.shape[1], self.num_heads, self.head_dim))
+        v = jnp.broadcast_to(v, (B, v.shape[1], self.num_heads, self.head_dim))
 
-        # Pytorch's scaled dot product attention, should use flash attention behind the hood
-        Tq = q.size(2)
-        Tk = k.size(2)
+        # Scaled dot product attention
+        Tq = q.shape[1]
+        Tk = k.shape[1]
 
-        # Full causal mask in training with no kv cache
+        # Create causal mask
         if kv_cache is None or Tq == Tk:
-            out = F.scaled_dot_product_attention(q, k, v, is_causal=True)
-        # No causal mask in inference when generating with single tokens
+            # Full causal mask for training
+            mask = jnp.tril(jnp.ones((Tq, Tk), dtype=jnp.bool_))
         elif Tq == 1:
-            out = F.scaled_dot_product_attention(q, k, v, is_causal=False)
-        # Custom causal mask in inference when generating with chunks
+            # No masking for single token
+            mask = None
         else:
-            attn_mask = torch.zeros((Tq, Tk), dtype=torch.bool, device=q.device)
+            # Custom causal mask for chunked inference
+            mask = jnp.zeros((Tq, Tk), dtype=jnp.bool_)
             prefix_len = Tk - Tq
             if prefix_len > 0:
-                attn_mask[:, :prefix_len] = True
-            attn_mask[:, prefix_len:] = torch.tril(
-                torch.ones((Tq, Tq), dtype=torch.bool, device=q.device)
-            )
-            out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
+                mask = mask.at[:, :prefix_len].set(True)
+            causal_part = jnp.tril(jnp.ones((Tq, Tq), dtype=jnp.bool_))
+            mask = mask.at[:, prefix_len:].set(causal_part)
 
-        return self.out_proj(out.transpose(1, 2).reshape(B, L, -1)), new_kv_cache
+        # Use JAX's scaled dot product attention implementation
+        out = jax.nn.dot_product_attention(
+            q, k, v, 
+            mask=mask,
+            scale=1.0 / jnp.sqrt(self.head_dim)
+        )
+
+        out = out.reshape(B, L, -1)
+        return self.out_proj(out), new_kv_cache
 
 # Transformer block
-class Transformer(nn.Module):
-    def __init__(self, dim, num_heads, dim_ff):
-        super().__init__()
+class TransformerBlock(nnx.Module):
+    def __init__(self, dim, num_heads, dim_ff, rngs):
+        self.attn = MultiQueryAttention(dim, num_heads, rngs)
+        
+        self.ffn1 = nnx.Linear(
+            dim,
+            dim_ff,
+            kernel_init=depth_aware_init,
+            use_bias=False,
+            dtype=jnp.bfloat16,
+            param_dtype=jnp.bfloat16,
+            rngs=rngs
+        )
+        
+        self.ffn2 = nnx.Linear(
+            dim_ff,
+            dim,
+            kernel_init=nnx.initializers.zeros,
+            use_bias=False,
+            dtype=jnp.bfloat16,
+            param_dtype=jnp.bfloat16,
+            rngs=rngs
+        )
 
-        self.attn = MultiQueryAttention(dim, num_heads)
-        self.ffn1 = nn.Linear(dim, dim_ff, bias=False)
-        self.ffn2 = nn.Linear(dim_ff, dim, bias=False)
-
-    def forward(self, x, cos, sin, kv_cache=None):
+    def __call__(self, x, cos, sin, kv_cache=None):
         # Attention with kv cache
         attn, new_kv_cache = self.attn(rms_norm(x), cos, sin, kv_cache)
         x = x + attn
         # Uses squared relu for activation
-        x = x + self.ffn2(F.relu(self.ffn1(rms_norm(x))).square())
+        ffn_out = self.ffn1(rms_norm(x))
+        ffn_out = jax.nn.relu(ffn_out) ** 2
+        x = x + self.ffn2(ffn_out)
         return x, new_kv_cache
 
-# Main chatbot model
-class ChatBot(nn.Module):
-    def __init__(self, options={}):
-        super().__init__()
-
+# GPT model in JAX
+class JAXGPT(nnx.Module):
+    def __init__(self, options={}, rngs=nnx.Rngs(0)):
         # Vocab setup - tiktoken BPE from GPT2
         self.encoding = tiktoken.get_encoding("gpt2")
         self.vocab_size = options.get("vocab_size", 50257)
@@ -119,77 +198,43 @@ class ChatBot(nn.Module):
         self.rotary_seq_len = options.get("rotary_seq_len", 1024)
 
         # Embedding
-        self.embedding = nn.Embedding(self.vocab_size, self.d_model, dtype=torch.bfloat16)
+        self.embedding = nnx.Embed(
+            self.vocab_size,
+            self.d_model,
+            embedding_init=nnx.initializers.normal(stddev=1.0),
+            dtype=jnp.bfloat16,
+            param_dtype=jnp.bfloat16,
+            rngs=rngs
+        )
 
         # Transformer decoder layers
-        self.transformer = nn.ModuleList([
-            Transformer(
-                self.d_model,
-                self.num_heads,
-                self.d_model * 4
-            ) for _ in range(self.num_layers)
+        self.transformer = nnx.List([
+            TransformerBlock(self.d_model, self.num_heads, self.d_model * 4, rngs)
+            for _ in range(self.num_layers)
         ])
 
-        # One-hot output
-        self.output = nn.Linear(self.d_model, self.vocab_size, bias=False)
-
-        # Apply weight init
-        self.apply(self._init_weights)
-        # Zero out specific output projections for residual paths
-        for layer in self.transformer:
-            torch.nn.init.zeros_(layer.attn.out_proj.weight)
-            torch.nn.init.zeros_(layer.ffn2.weight)
-        torch.nn.init.zeros_(self.output.weight)
-
-        # Device
-        if torch.cuda.is_available():
-            torch.backends.cudnn.benchmark = True
-            torch.backends.cuda.matmul.fp32_precision = "tf32"
-            torch.backends.cudnn.fp32_precision = "tf32"
-            self.device = torch.device("cuda")
-        else:
-            self.device = options.get("device", torch.device("cpu"))
-        self.to(self.device)
+        # Output projection
+        self.output = nnx.Linear(
+            self.d_model,
+            self.vocab_size,
+            kernel_init=nnx.initializers.zeros,
+            use_bias=False,
+            dtype=jnp.bfloat16,
+            param_dtype=jnp.bfloat16,
+            rngs=rngs
+        )
 
         # Precompute cos and sin
-        self.cos, self.sin = self._precompute_rotary_embeddings(self.rotary_seq_len, self.d_model // self.num_heads)
+        self.cos, self.sin = compute_rotary_embeddings(
+            self.rotary_seq_len,
+            self.d_model // self.num_heads
+        )
 
-        # Init kv cache
-        self.kv_caches = []
-        self.use_kv_cache = False
-
-    def _init_weights(self, module):
-        # Yoinked from nanochat basically, depth-aware weight init
-        if isinstance(module, nn.Linear):
-            fan_out = module.weight.size(0)
-            fan_in = module.weight.size(1)
-            std = 1.0 / math.sqrt(fan_in) * min(1.0, math.sqrt(fan_out / fan_in))
-
-            torch.nn.init.normal_(module.weight, mean=0.0, std=std)
-            if module.bias is not None:
-                torch.nn.init.zeros_(module.bias)
-        elif isinstance(module, nn.Embedding):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=1.0)
-
-    def _precompute_rotary_embeddings(self, seq_len, head_dim, base=10000):
-        # Stride the channels
-        channel_range = torch.arange(0, head_dim, 2, dtype=torch.float32, device=self.device)
-        inv_freq = 1.0 / (base ** (channel_range / head_dim))
-
-        # Stride the time steps
-        t = torch.arange(seq_len, dtype=torch.float32, device=self.device)
-
-        # Calculate the rotation frequencies at each (time, channel) pair
-        freqs = torch.outer(t, inv_freq)
-        cos, sin = freqs.cos(), freqs.sin()
-
-        # After we have used float32 for more accurate cos and sin, we keep bfloat16
-        cos, sin = cos.bfloat16(), sin.bfloat16()
-        cos, sin = cos[None, None, :, :], sin[None, None, :, :]
-        return cos, sin
-
-    def forward(self, token_ids):
+    def __call__(self, token_ids, kv_caches=None, checkpoint_cond=None):
+        # Init util vars
         _, seq_len = token_ids.shape
+        use_kv_cache = kv_caches is not None
+        kv_cache_not_empty = len(kv_caches) > 0 and kv_caches[0] is not None
 
         # Token embedding
         embedding = self.embedding(token_ids)
@@ -198,33 +243,28 @@ class ChatBot(nn.Module):
         embedding = rms_norm(embedding)
 
         # Get position for RoPE
-        if self.use_kv_cache and len(self.kv_caches) > 0 and self.kv_caches[0] is not None:
-            # When using cache, position starts from cache length
-            cache_len = self.kv_caches[0][0].size(2)
-            cos = self.cos[:, :, cache_len:cache_len + seq_len, :]
-            sin = self.sin[:, :, cache_len:cache_len + seq_len, :]
+        if use_kv_cache and kv_cache_not_empty:
+            cache_len = kv_caches[0][0].shape[1]
+            cos = self.cos[:, cache_len:cache_len + seq_len, :, :]
+            sin = self.sin[:, cache_len:cache_len + seq_len, :, :]
         else:
-            # No cache or not inference, use positions from 0
-            cos = self.cos[:, :, :seq_len, :]
-            sin = self.sin[:, :, :seq_len, :]
-
-        # Initialize cache list
-        new_kv_caches = []
+            cos = self.cos[:, :seq_len, :, :]
+            sin = self.sin[:, :seq_len, :, :]
 
         # Transformer forward pass
+        new_kv_caches = []
+
         for i, layer in enumerate(self.transformer):
-            if self.use_kv_cache:
-                layer_cache = self.kv_caches[i] if i < len(self.kv_caches) else None
-                embedding, new_kv_cache = layer(embedding, cos, sin, layer_cache)
+            if use_kv_cache:
+                embedding, new_kv_cache = layer(embedding, cos, sin, kv_caches[i] if kv_cache_not_empty else None)
                 new_kv_caches.append(new_kv_cache)
             else:
-                if i % 3 == 0:
-                    embedding, _ = checkpoint(layer, embedding, cos, sin, None, use_reentrant=False)
-                else:
+                # checkpoint_cond determines whether a layer should be checkpointed
+                if checkpoint_cond is not None and checkpoint_cond(i):
+                    embedding, _ = jax.checkpoint(layer)(embedding, cos, sin, None)
+                # No gradient checkpointing
+                elif checkpoint_cond(i):
                     embedding, _ = layer(embedding, cos, sin, None)
-
-        # Update cache list
-        self.kv_caches = new_kv_caches
 
         # Final norm
         embedding = rms_norm(embedding)
@@ -234,9 +274,9 @@ class ChatBot(nn.Module):
 
         # Logits softcapping
         softcap = 15.0
-        output = softcap * torch.tanh(output / softcap)
+        output = softcap * jnp.tanh(output / softcap)
         
-        return output
+        return output, new_kv_caches
 
     def train_model(
         self,
@@ -257,105 +297,156 @@ class ChatBot(nn.Module):
         # Cap context window
         sequence_length = min(sequence_length, self.rotary_seq_len)
 
-        # Loss
-        criterion = nn.CrossEntropyLoss()
-
-        # (45%) cooldown to min (0.1x)
+        # Calculate LR schedule parameters
         stable_steps = int(stable_range * total_steps)
         cooldown_steps = int((1 - stable_range) * total_steps)
 
-        # AdamW for embedding/linear weights
-        linear_params = [self.embedding.weight, self.output.weight]
-        adam_opt = Adam8bit(linear_params, lr=adam_lr, betas=adam_betas)
-        adam_cooldown_scheduler = LinearLR(adam_opt, start_factor=1.0, end_factor=max_decay, total_iters=cooldown_steps)
+        # ==================== ADAM OPTIMIZER ====================
+        # For embedding and output layers
+        adam_schedule = optax.linear_schedule(
+            init_value=adam_lr,
+            end_value=adam_lr * max_decay,
+            transition_steps=cooldown_steps,
+            transition_begin=stable_steps
+        )
+        
+        # Build Adam transformation chain
+        adam_tx = optax.chain(
+            optax.clip_by_global_norm(1.0),
+            optax.scale_by_adam(b1=adam_betas[0], b2=adam_betas[1]),
+            optax.scale_by_schedule(adam_schedule),
+            optax.scale(-1.0)
+        )
+        
+        # Wrap with MultiSteps for gradient accumulation
+        # This accumulates gradients over K steps before updating weights
+        adam_tx = optax.MultiSteps(adam_tx, every_k_schedule=gradient_accumulation_steps)
+        
+        adam_opt = nnx.Optimizer(
+            model=self,
+            wrt=lambda path, _: any("embedding" in str(k) or "output" in str(k) for k in path),
+            tx=adam_tx
+        )
 
-        # Muon for transformer params
-        transformer_params = [p for n, p in self.named_parameters() if "embedding" not in n and "output" not in n]
-        muon_opt = Muon(transformer_params, lr=muon_lr, momentum=0.95)
-        muon_cooldown_scheduler = LinearLR(muon_opt, start_factor=1.0, end_factor=max_decay, total_iters=cooldown_steps)
+        # ==================== MUON OPTIMIZER ====================
+        # For transformer layers (uses Muon for 2D params, Adam for others)
+        muon_schedule = optax.linear_schedule(
+            init_value=muon_lr,
+            end_value=muon_lr * max_decay,
+            transition_steps=cooldown_steps,
+            transition_begin=stable_steps
+        )
+        
+        # Build Muon transformation chain
+        muon_tx = optax.chain(
+            optax.clip_by_global_norm(1.0),
+            optax.contrib.muon(
+                learning_rate=1.0,  # Set to 1.0, we apply schedule separately
+                beta=0.95,  # Muon momentum parameter
+                adam_b1=adam_betas[0],  # Adam beta1 for non-2D params
+                adam_b2=adam_betas[1]   # Adam beta2 for non-2D params
+            ),
+            optax.scale_by_schedule(muon_schedule),
+        )
+        
+        # Wrap with MultiSteps for gradient accumulation
+        muon_tx = optax.MultiSteps(muon_tx, every_k_schedule=gradient_accumulation_steps)
+        
+        muon_opt = nnx.Optimizer(
+            model=self,
+            wrt=nnx.PathContains("transformer"),
+            tx=muon_tx
+        )
 
-        # Track optimizer step for Muon momentum update
-        optimizer_step = 0
+        # ==================== TRAINING STEP ====================
+        @jax.jit
+        def train_step(model, batch, adam_opt, muon_opt):
+            input_tokens = batch[:, :-1]
+            target_tokens = batch[:, 1:]
 
-        def opt_step():
-            # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(self.parameters(), 1.0)
+            # Loss function
+            def loss_fn(mdl):
+                output, _ = mdl(input_tokens, kv_caches=None)
+                output = output.reshape(-1, mdl.vocab_size)
+                target_flat = target_tokens.reshape(-1)
+                
+                # Cross entropy in fp32 for numerical stability
+                return optax.softmax_cross_entropy_with_integer_labels(
+                    output.astype(jnp.float32),
+                    target_flat
+                ).mean()
 
-            # AdamW step
-            if optimizer_step % 2 != 0:
-                adam_opt.step()
-                adam_opt.zero_grad(set_to_none=True)
+            loss, grads = nnx.value_and_grad(loss_fn)(model)
 
-            # Muon step
-            for group in muon_opt.param_groups:
-                group["momentum"] = get_muon_momentum(optimizer_step)
-            muon_opt.step()
-            muon_opt.zero_grad(set_to_none=True)
+            # Get grads for just embedding and output
+            adam_grads = nnx.State({
+                k: v for k, v in grads.items() 
+                if k in ["embedding", "output"]
+            })
 
-            # LR scheduler steps
-            if optimizer_step > stable_steps:
-                adam_cooldown_scheduler.step()
-                muon_cooldown_scheduler.step()
+            # Get grads for just transformer
+            muon_grads = nnx.State({
+                k: v for k, v in grads.items() 
+                if k == "transformer"
+            })
 
+            # Update weights through optimizers
+            adam_opt.update(model, adam_grads)
+            muon_opt.update(model, muon_grads)
+
+            return loss
+
+        # ==================== TRAINING LOOP ====================
         for segment_index, segment in enumerate(data_loader):
             # Encode segment to tokens
             tokens = np.array(self.text_to_tokens(segment))
             print(f"Segment {segment_index + 1}: {len(segment)} chars -> {len(tokens)} tokens")
-            
-            # Truncate to fit exact number of sequences
+
+            # Prepare sequences
             num_sequences = len(tokens) // sequence_length
             truncated = tokens[:num_sequences * sequence_length]
-            # Reshape into 2D array
             sequences = truncated.reshape(num_sequences, sequence_length)
-            
             print(f"Segment {segment_index + 1}: Pre-computed {len(sequences)} sequences in memory")
 
-            # Training loop for this segment
-            self.train()
-
-            total_loss = 0
+            total_loss = 0.0
             num_batches = 0
-            
-            adam_opt.zero_grad(set_to_none=True)
-            muon_opt.zero_grad(set_to_none=True)
 
+            # Process in small batches
+            # MultiSteps will accumulate gradients automatically
             for batch_start in range(0, len(sequences), batch_size):
-                batch_sequences = torch.tensor(sequences[batch_start:batch_start + batch_size], dtype=torch.long, device=self.device)
-                input_tokens = batch_sequences[:, :-1]
-                target_tokens = batch_sequences[:, 1:]
+                batch_end = min(batch_start + batch_size, len(sequences))
 
-                # Enable mixed precision
-                with autocast(device_type=self.device.type, dtype=torch.bfloat16):
-                    output = self.forward(input_tokens)  # [batch_size, seq_len-1, vocab_size]
-                    output = output.reshape(-1, self.vocab_size)  # [batch_size * seq_len-1, vocab_size]
-                    target_tokens = target_tokens.reshape(-1)  # [batch_size * seq_len-1]
-                    loss = criterion(output, target_tokens)
-                    loss = loss / gradient_accumulation_steps
+                # Skip incomplete batches to prevent recompilation
+                if batch_end - batch_start < batch_size:
+                    continue
 
-                # Propagate grad
-                loss.backward()
-                total_loss += loss.item() * gradient_accumulation_steps
+                # Load one small batch at a time
+                batch = jnp.array(sequences[batch_start:batch_end], dtype=jnp.int32)
+
+                # Single training step
+                loss = train_step(self, batch, adam_opt, muon_opt)
+
+                total_loss += float(loss)
                 num_batches += 1
-                
-                # Update weights every gradient_accumulation_steps
-                if num_batches % gradient_accumulation_steps == 0:
-                    opt_step()
-                    optimizer_step += 1
 
-            # Final update if needed
-            if num_batches % gradient_accumulation_steps != 0:
-                opt_step()
-                optimizer_step += 1
-
-            # Get log info
+            # Log segment statistics
             avg_loss = total_loss / num_batches if num_batches > 0 else 0
-            adamw_current_lr = adam_opt.param_groups[0]["lr"]
-            muon_current_lr = muon_opt.param_groups[0]["lr"]
+            # Get the actual gradient step from MultiSteps wrapper
+            adam_step = adam_opt.opt_state.gradient_step
+            muon_step = muon_opt.opt_state.gradient_step
+            # Query the schedules with the actual step count
+            adam_lr_current = float(adam_schedule(adam_step))
+            muon_lr_current = float(muon_schedule(muon_step))
 
-            # Log and save
-            print(f"Segment {segment_index + 1}: Loss: {avg_loss:.4f}, AdamW LR: {adamw_current_lr:.6f}, Muon LR: {muon_current_lr:.6f}, Batches: {num_batches}")
+            print(
+                f"Segment {segment_index + 1}: Loss: {avg_loss:.4f}, "
+                f"Adam LR: {adam_lr_current:.6f}, Muon LR: {muon_lr_current:.6f}, "
+                f"Batches: {num_batches}"
+            )
+
+            # Save model after each segment
             self.save()
-            print(f"Segment {segment_index + 1}: Saved to chatbot.pth")
+            print(f"Segment {segment_index + 1}: Saved to jaxgpt.npz")
 
     def generate(
         self,
@@ -364,142 +455,126 @@ class ChatBot(nn.Module):
         max_length=4096,
         temperature=0.7,
         topk=50,
-        memory=[]
+        memory=[],
+        rng_key=jax.random.PRNGKey(0),
+        kv_caches=[]
     ):
-        self.eval()
-        # Enable kv cache and reset previous kv caches
-        self.kv_caches = []
-        self.use_kv_cache = True
+        current_tokens = memory + self.text_to_tokens(prompt)
+        word_stack = []
 
-        with torch.inference_mode():
-            current_tokens = memory + self.text_to_tokens(prompt)
+        for i in range(max_length):
+            if i == 0 or len(kv_caches) == 0:
+                input_tokens = current_tokens[-context_window:]
+            else:
+                input_tokens = [current_tokens[-1]]
 
-            # Stack in case a char is made up of multiple tokens
-            word_stack = []
+            input_tensor = jnp.array(input_tokens, dtype=jnp.int32)[None, :]
 
-            for i in range(max_length):
-                if i == 0 or len(self.kv_caches) == 0:
-                    # First iteration: process full context
-                    input_tokens = current_tokens[-context_window:]
-                else:
-                    # Subsequent: only process new token
-                    input_tokens = [current_tokens[-1]]
+            # Forward pass (model uses bfloat16 internally)
+            output, kv_caches = self(input_tensor, kv_caches)
+            logits = output[0, -1, :].astype(jnp.float32)  # Cast to float32 for sampling
 
-                input_tensor = torch.tensor(input_tokens, device=self.device).unsqueeze(0)
+            # Apply temperature scaling
+            scaled_logits = logits / temperature
 
-                # Forward pass
-                with autocast(device_type=self.device.type, dtype=torch.bfloat16):
-                    output = self.forward(input_tensor)
-                logits = output[0, -1, :]
+            # Top-k sampling
+            top_k_values, top_k_indices = jax.lax.top_k(scaled_logits, k=topk)
+            top_k_probs = jax.nn.softmax(top_k_values, axis=0)
 
-                # Apply temperature scaling
-                scaled_logits = logits / temperature
+            # Sample from top-k
+            rng_key, sample_key = jax.random.split(rng_key)
+            sampled_index = jax.random.categorical(sample_key, jnp.log(top_k_probs))
+            next_token_id = int(top_k_indices[sampled_index])
 
-                # Top-k scaling
-                top_k_values, top_k_indices = torch.topk(scaled_logits, k=topk)
-                top_k_probs = torch.softmax(top_k_values, dim=0)
+            if (
+                next_token_id == self.eos_token_id or
+                ((next_token_id == 25 or next_token_id in [12982, 48902]) and 
+                 current_tokens[-1] in [12982, 48902])
+            ):
+                current_tokens.pop()
+                break
 
-                # Sample from top-k
-                sampled_index = torch.multinomial(top_k_probs, 1).item()
-                next_token_id = top_k_indices[sampled_index].item()
+            current_tokens.append(next_token_id)
 
-                torch.cuda.empty_cache()
+            # Stream output
+            word_stack.append(next_token_id)
+            decoded_word = self.tokens_to_text(word_stack)
 
-                if (
-                    # Stop on eos token and conversation overlap
-                    next_token_id == self.eos_token_id or
-                    # Stop on "User: or Assistant:" or "UserUser"-ish hallucinations
-                    ((next_token_id == 25 or next_token_id in [12982, 48902]) and current_tokens[-1] in [12982, 48902])
-                ):
-                    current_tokens.pop()
-                    break
+            if (
+                "\ufffd" not in decoded_word and
+                "User" not in decoded_word and
+                "Assistant" not in decoded_word
+            ):
+                print(decoded_word, end="")
+                word_stack = []
 
-                # Push newest token
-                current_tokens.append(next_token_id)
-
-                # Stream output
-                word_stack.append(next_token_id)
-                decoded_word = self.tokens_to_text(word_stack)
-
-                if (
-                    "\ufffd" not in decoded_word and
-                    "User" not in decoded_word and
-                    "Assistant" not in decoded_word
-                ):
-                    print(decoded_word, end="")
-                    word_stack = []
-
-                # Reset kv cache if too long
-                if len(self.kv_caches) > 0 and self.kv_caches[0][0].size(2) >= context_window:
-                    self.kv_caches = []
-                    current_tokens = current_tokens[-context_window:]
-
-        # Disable kv cache when done generating and clear kv cache
-        self.use_kv_cache = False
-        self.kv_caches = []
+            # Reset kv cache if too long
+            if len(kv_caches) > 0 and kv_caches[0][0].shape[1] >= context_window:
+                kv_caches = []
+                current_tokens = current_tokens[-context_window:]
 
         return current_tokens[-context_window:]
 
     def validate_model(self, data_loader, sequence_length=1024, batch_size=4):
         print(f"Running validation with batch_size={batch_size}, sequence_length={sequence_length}")
 
-        # Cap context window
         sequence_length = min(sequence_length, self.rotary_seq_len)
 
-        # Set model to eval mode
-        self.eval()
-
-        criterion = nn.CrossEntropyLoss()
-
-        total_loss = 0
+        total_loss = 0.0
         total_tokens = 0
         num_segments = 0
 
-        # No gradient computation during validation
-        with torch.no_grad():
-            for segment_index, segment in enumerate(data_loader):
-                # Encode segment to tokens (same as training)
-                tokens = self.text_to_tokens(segment)
-                print(f"Val Segment {segment_index + 1}: {len(segment)} chars -> {len(tokens)} tokens")
+        @jax.jit
+        def compute_loss(model, input_tokens, target_tokens):
+            output, _ = model(input_tokens, kv_caches=None)
+            output = output.reshape(-1, model.vocab_size)
+            target_flat = target_tokens.reshape(-1)
+            
+            # Cross entropy in fp32 for numerical stability
+            losses = optax.softmax_cross_entropy_with_integer_labels(
+                output.astype(jnp.float32),
+                target_flat
+            )
+            return jnp.sum(losses), target_flat.shape[0]
 
-                # Pre-create all sequences (same as training)
-                sequences = []
-                for start_idx in range(0, len(tokens) - sequence_length, sequence_length):
-                    sequence = tokens[start_idx:start_idx + sequence_length]
-                    if len(sequence) == sequence_length:
-                        sequences.append(sequence)
+        for segment_index, segment in enumerate(data_loader):
+            # Encode segment to tokens
+            tokens = np.array(self.text_to_tokens(segment))
+            print(f"Val Segment {segment_index + 1}: {len(segment)} chars -> {len(tokens)} tokens")
 
-                print(f"Val Segment {segment_index + 1}: Pre-computed {len(sequences)} sequences in memory")
+            # Prepare sequences
+            num_sequences = len(tokens) // sequence_length
+            truncated = tokens[:num_sequences * sequence_length]
+            sequences = truncated.reshape(num_sequences, sequence_length)
+            print(f"Val Segment {segment_index + 1}: Pre-computed {len(sequences)} sequences")
 
-                segment_loss = 0
-                segment_tokens = 0
+            segment_loss = 0.0
+            segment_tokens = 0
 
-                # Process batches (same as training)
-                for batch_start in range(0, len(sequences), batch_size):
-                    batch_sequences = torch.tensor(sequences[batch_start:batch_start + batch_size], device=self.device)
-                    input_tokens = batch_sequences[:, :-1]
-                    target_tokens = batch_sequences[:, 1:]
+            for batch_start in range(0, len(sequences), batch_size):
+                batch_end = min(batch_start + batch_size, len(sequences))
+                
+                # Skip incomplete batches for consistency
+                if batch_end - batch_start < batch_size:
+                    continue
+                
+                # Load one small batch at a time
+                batch = jnp.array(sequences[batch_start:batch_end], dtype=jnp.int32)
+                input_tokens = batch[:, :-1]
+                target_tokens = batch[:, 1:]
 
-                    # Enable mixed precision (same as training)
-                    with autocast(device_type=self.device.type, dtype=torch.bfloat16):
-                        output = self.forward(input_tokens)  # [batch_size, seq_len-1, vocab_size]
-                        output = output.reshape(-1, self.vocab_size)  # [batch_size * seq_len-1, vocab_size]
-                        target_tokens = target_tokens.reshape(-1)  # [batch_size * seq_len-1]
-                        loss = criterion(output, target_tokens)
+                loss, num_tokens = compute_loss(self, input_tokens, target_tokens)
+                segment_loss += float(loss)
+                segment_tokens += int(num_tokens)
 
-                    segment_loss += loss.item() * target_tokens.size(0)
-                    segment_tokens += target_tokens.size(0)
+            total_loss += segment_loss
+            total_tokens += segment_tokens
+            num_segments += 1
 
-                total_loss += segment_loss
-                total_tokens += segment_tokens
-                num_segments += 1
+            avg_segment_loss = segment_loss / segment_tokens if segment_tokens > 0 else 0
+            avg_segment_perplexity = math.exp(avg_segment_loss) if avg_segment_loss < 20 else float("inf")
+            print(f"Val Segment {segment_index + 1}: Loss: {avg_segment_loss:.4f}, Perplexity: {avg_segment_perplexity:.2f}")
 
-                # Log segment validation results
-                avg_segment_loss = segment_loss / segment_tokens if segment_tokens > 0 else 0
-                avg_segment_perplexity = math.exp(avg_segment_loss) if avg_segment_loss < 20 else float("inf")
-                print(f"Val Segment {segment_index + 1}: Loss: {avg_segment_loss:.4f}, Perplexity: {avg_segment_perplexity:.2f}")
-
-        # Calculate overall validation metrics
         avg_loss = total_loss / total_tokens if total_tokens > 0 else 0
         perplexity = math.exp(avg_loss) if avg_loss < 20 else float("inf")
 
@@ -508,20 +583,26 @@ class ChatBot(nn.Module):
         print(f"Average Loss: {avg_loss:.4f}")
         print(f"Perplexity: {perplexity:.2f}")
 
-    def save(self, path="./chatbot.pth"):
-        torch.save({
-            "model_state_dict": self.state_dict(),
-            "d_model": self.d_model,
-            "num_layers": self.num_layers,
-            "num_heads": self.num_heads,
-            "vocab_size": self.vocab_size,
-            "rotary_seq_len": self.rotary_seq_len,
-            "eos_token_id": self.eos_token_id
-        }, path)
+    def save(self, path="./jaxgpt.npz"):
+        state = nnx.state(self)
+        with open(path, "wb") as f:
+            np.savez(f, **jax.tree.map(np.array, state))
 
-    def load(self, path="./chatbot.pth"):
-        checkpoint = torch.load(path, map_location=self.device)
-        self.load_state_dict(checkpoint["model_state_dict"])
+    @staticmethod
+    def load(path="./jaxgpt.npz", options=None):
+        if options is None:
+            options = {}
+        
+        # Create new model
+        model = JAXGPT(options=options, rngs=nnx.Rngs(0))
+        
+        # Load state
+        with open(path, "rb") as f:
+            data = np.load(f)
+            state_dict = {k: jnp.array(v) for k, v in data.items()}
+        
+        nnx.update(model, state_dict)
+        return model
 
     def text_to_tokens(self, text):
         return self.encoding.encode(text, allowed_special={"<|endoftext|>"})

@@ -1,28 +1,24 @@
-import torch
 import os
-from model import ChatBot
+import jax
+import flax.nnx as nnx
+from model import JAXGPT
+from data import load_sft_data
 
 if __name__ == "__main__":
-    torch.cuda.empty_cache()
-
     # Initialize model
-    chatbot = ChatBot()
-    chatbot = torch.compile(chatbot, mode="reduce-overhead")
-
-    print(f"Using device: {chatbot.device}")
-    print(f"Model parameters: {sum(p.numel() for p in chatbot.parameters()):,}")
-
-    # Load
     is_pretrained = False
 
-    if os.path.exists("chatbot_pretrained.pth"):
-        print("Loaded from chatbot_pretrained.pth")
-        chatbot.load(path="chatbot_pretrained.pth")
+    # Load pretrained model and set flag if found
+    if os.path.exists("jaxgpt_pretrained.npz"):
+        print("Loaded from jaxgpt_pretrained.npz")
+        gpt = JAXGPT.load(path="jaxgpt_pretrained.npz")
 
         is_pretrained = True
     else:
-        print("Loaded from chatbot.pth")
-        chatbot.load()
+        print("Loaded from jaxgpt.npz")
+        gpt = JAXGPT.load()
+
+    print(f"Model parameters: {sum(x.size for x in jax.tree_util.tree_leaves(nnx.state(gpt))):,}")
 
     # Prompt
     memory = []
@@ -53,15 +49,15 @@ if __name__ == "__main__":
             print("Memory cleared")
             memory = []
         elif prompt == "/showmem":
-            print(chatbot.tokens_to_text(memory))
+            print(gpt.tokens_to_text(memory))
         else:
             current_memory = memory if is_mem_enabled else []
 
             print("Assistant:", end="")
             if is_pretrained:
-                new_memory = chatbot.generate(prompt, memory=current_memory)
+                new_memory = gpt.generate(prompt, memory=current_memory)
             else:
-                new_memory = chatbot.generate(f"User: {prompt}\nAssistant: ", memory=current_memory)
+                new_memory = gpt.generate(f"User: {prompt}\nAssistant: ", memory=current_memory)
 
             if is_mem_enabled:
                 memory = new_memory

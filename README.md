@@ -1,6 +1,6 @@
 # PlanckGPT
 
-PlanckGPT (planck length reference :D) is my attempt to make a tiny language model from scratch mostly for fun and educational purposes, but also to see how far a consumer-level computer can go in AI development. It has about 150m parameters and is pretrained on roughly 3 billion tokens of the Fineweb-edu dataset and finetuned with specifications I will mention below. This is small compared to modern LLMs' standards, which also explains why it is goofy when you use it (lol), but you can definitely train this on a mid-range card for just 1-2 days, and it can still generate proper English and data that should be related to the user's prompt (its pretrain performance roughly matches that of GPT2 just so you know).
+PlanckGPT (planck length reference :D) is my attempt to make a tiny language model from scratch mostly for fun and educational purposes, but also to see how far a consumer-level computer can go in AI development. It has about 150m parameters and is pretrained on roughly 3 billion tokens of the Fineweb-edu dataset and finetuned with specifications I will mention below. This is small compared to modern LLMs' standards, which also explains why it is goofy when you use it (lol), but you can definitely train this on a mid-range card for just 1-2 days, and it can still generate proper English and data that should be related to the user's prompt (its pretrain performance roughly matches that of GPT2 just so you know). To really squeeze out every little performance gain, I'm using JAX rather than Pytorch.
 
 ## Setup
 
@@ -9,19 +9,18 @@ Setup venv and install necessary packages:
 # Create and activate venv
 python -m venv venv
 # Run this every time you start
-source venv/scripts/activate
+source venv/bin/activate
 # or "./venv/scripts/activate" if you are on windows
 
 # Install packages (once)
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu130
-pip install tiktoken datasets bitsandbytes
+pip install jax-ai-stack "jax[cuda]" tiktoken datasets
 ```
 
 Of course, you should already install compatible CUDA and Python versions, I currently use Python 3.13 and CUDA 13.
 
 ## Running PlanckGPT
 
-1. Download the latest model (`chatbot.pth`) in the releases page.
+1. Download the latest model (`jaxgpt.npz`) in the releases page.
 2. Simply run:
 ```sh
 python inference.py
@@ -29,7 +28,7 @@ python inference.py
 
 A prompt will appear for you to chat with the model.
 
-If you want to run the pretrained model only with no finetuning at all, then simply download `chatbot_pretrained.pth` from the releases page and move it to this directory. You have to do this because the pretrained model does not have user or assistant distinctions and have to be treated differently.
+If you want to run the pretrained model only with no finetuning at all, then simply download `jaxgpt_pretrained.npz` from the releases page and move it to this directory. You have to do this because the pretrained model does not have user or assistant distinctions and have to be treated differently.
 
 ## Pretraining
 
@@ -38,21 +37,21 @@ To pretrain the model from scratch, run:
 python train.py
 ```
 
-The model will train with 3b+ tokens with 20 150m-token segments (estimated 40 hours on my Laptop RTX 5070 Mobile), and after each epoch it will save the current model to `./chatbot.pth`.
+The model will train with 3b+ tokens with 20 150m-token segments (estimated 40 hours on my Laptop RTX 5070 Mobile), and after each epoch it will save the current model to `./jaxgpt.npz`.
 
 ## Finetuning
 
-To finetune, simply rename your model file into `chatbot_continue.pth` and run:
+To finetune, simply rename your model file into `jaxgpt_continue.npz` and run:
 ```sh
 python midtrain.py
 ```
 
-This will run the mid-training process, and it will save the finetuned model to `./chatbot.pth` just like pretraining does. When finished, rename it back to `chatbot_continue.pth` and run:
+This will run the mid-training process, and it will save the finetuned model to `./jaxgpt.npz` just like pretraining does. When finished, rename it back to `jaxgpt_continue.npz` and run:
 ```sh
 python sft.py
 ```
 
-The output model is also in `./chatbot.pth`.
+The output model is also in `./jaxgpt.npz`.
 
 ## Architecture
 
@@ -62,21 +61,21 @@ Currently it uses:
 * Embedding: 768-dimensional token embedding.
 * Rotary positional embedding.
 * Transformer: 12 decoder layers, 6 heads, 3072 d_ffn, 768 d_model.
-* Multi-Query Attention with flash attention support (sdpa).
+* Multi-Query Attention with JAX's dot_product_attention.
 * Squared ReLU for activation.
 * RMSNorm without learnable params for normalization, applied how you would expect, but also used on QK, embedding, and before output projection.
 * Output: Linear layer to vocabulary.
+* JAX.
 
 and is trained with:
 
 * Dataset: Fineweb-edu (~3b tokens).
 * Context Window: 1024 tokens.
 * Batch Size: 4 (effective batch size: 512 with gradient accumulation).
-* Muon optimizer for transformer weights, 8-bit Adam optimizer for embedding and output projection.
+* Muon optimizer for transformer weights, Adam optimizer for embedding and output projection.
 * Stable LR for the first 55% of the steps, LinearLR decay to 0.1x for the rest.
-* BF16 mixed precision training and other Blackwell-specific features.
-* Training with torch.compile on "max-autotune" mode.
-* Gradient checkpointing in 2/3 of the transformer layers.
+* Full BF16 training and other Blackwell-specific features.
+* No gradient checkpointing (but you can configure it if you want).
 
 and is finetuned with:
 
@@ -84,7 +83,7 @@ and is finetuned with:
     * Smol-smoltalk (460k rows).
     * MMLU (100k rows).
     * GSM8K (8k rows).
-    * Custom identity json (1000 rows, repeated 4 times, generated from Claude Haiku 4.5).
+    * Custom identity json (1000 rows, repeated 4 times, generated from Claude Sonnet 4.5).
     * Same configuration as pretraining, but with 80% stable LR range.
 * SFT:
     * Smol-smoltalk (10k rows).
@@ -98,7 +97,7 @@ and generates text with:
 * Sampling: Top-k sampling (k=50).
 * Temperature: 0.7.
 * Context Window: 1024 tokens.
-* Stopping: EOS token for fixed limit (10240 by default).
+* Stopping: EOS token for fixed limit (4096 by default).
 * KV cache for faster inference.
 
 The current configuration is designed to squeeze out the best possible performance out of an 8gb 5070 Mobile, you can change the configs to match your card.
