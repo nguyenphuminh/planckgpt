@@ -233,8 +233,7 @@ class JAXGPT(nnx.Module):
     def __call__(self, token_ids, kv_caches=None, checkpoint_cond=None):
         # Init util vars
         _, seq_len = token_ids.shape
-        use_kv_cache = kv_caches is not None
-        kv_cache_not_empty = len(kv_caches) > 0 and kv_caches[0] is not None
+        kv_cache_not_empty = kv_caches is not None and len(kv_caches) > 0 and kv_caches[0] is not None
 
         # Token embedding
         embedding = self.embedding(token_ids)
@@ -243,7 +242,7 @@ class JAXGPT(nnx.Module):
         embedding = rms_norm(embedding)
 
         # Get position for RoPE
-        if use_kv_cache and kv_cache_not_empty:
+        if kv_cache_not_empty:
             cache_len = kv_caches[0][0].shape[1]
             cos = self.cos[:, cache_len:cache_len + seq_len, :, :]
             sin = self.sin[:, cache_len:cache_len + seq_len, :, :]
@@ -255,7 +254,7 @@ class JAXGPT(nnx.Module):
         new_kv_caches = []
 
         for i, layer in enumerate(self.transformer):
-            if use_kv_cache:
+            if kv_caches is not None:
                 embedding, new_kv_cache = layer(embedding, cos, sin, kv_caches[i] if kv_cache_not_empty else None)
                 new_kv_caches.append(new_kv_cache)
             else:
@@ -263,7 +262,7 @@ class JAXGPT(nnx.Module):
                 if checkpoint_cond is not None and checkpoint_cond(i):
                     embedding, _ = jax.checkpoint(layer)(embedding, cos, sin, None)
                 # No gradient checkpointing
-                elif checkpoint_cond(i):
+                else:
                     embedding, _ = layer(embedding, cos, sin, None)
 
         # Final norm
