@@ -35,7 +35,7 @@ def load_data(
 
 def load_val_data(
     start=4470000,
-    end=4485000,
+    end=4480000,
     step=10000,
     dataset_name="HuggingFaceFW/fineweb-edu",
     subset="sample-10BT",
