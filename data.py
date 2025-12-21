@@ -3,7 +3,7 @@ from datasets import load_dataset, Dataset, concatenate_datasets
 
 def load_data(
     start=0,
-    end=4470000,
+    end=2900360,
     step=145018,
     dataset_name="HuggingFaceFW/fineweb-edu",
     subset="sample-10BT",
@@ -36,7 +36,7 @@ def load_data(
 def load_val_data(
     start=4470000,
     end=4485000,
-    step=15000,
+    step=10000,
     dataset_name="HuggingFaceFW/fineweb-edu",
     subset="sample-10BT",
     split="train"
@@ -306,4 +306,3 @@ def load_sft_data(
         combined_text = "".join(conversation_parts)
         
         yield combined_text
-

@@ -362,7 +362,7 @@ class ChatBot(nn.Module):
         prompt,
         context_window=1024,
         max_length=4096,
-        temperature=0.7,
+        temperature=0.8,
         topk=50,
         memory=[]
     ):
