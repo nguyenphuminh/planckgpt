@@ -57,7 +57,7 @@ class MultiQueryAttention(nnx.Module):
             kernel_init=depth_aware_init,
             use_bias=False,
             dtype=jnp.bfloat16,
-            param_dtype=jnp.bfloat16,
+            param_dtype=jnp.float32,
             rngs=rngs
         )
 
@@ -67,7 +67,7 @@ class MultiQueryAttention(nnx.Module):
             kernel_init=depth_aware_init,
             use_bias=False,
             dtype=jnp.bfloat16,
-            param_dtype=jnp.bfloat16,
+            param_dtype=jnp.float32,
             rngs=rngs
         )
 
@@ -77,7 +77,7 @@ class MultiQueryAttention(nnx.Module):
             kernel_init=depth_aware_init,
             use_bias=False,
             dtype=jnp.bfloat16,
-            param_dtype=jnp.bfloat16,
+            param_dtype=jnp.float32,
             rngs=rngs
         )
 
@@ -87,7 +87,7 @@ class MultiQueryAttention(nnx.Module):
             kernel_init=nnx.initializers.zeros,
             use_bias=False,
             dtype=jnp.bfloat16,
-            param_dtype=jnp.bfloat16,
+            param_dtype=jnp.float32,
             rngs=rngs
         )
 
@@ -159,7 +159,7 @@ class TransformerBlock(nnx.Module):
             kernel_init=depth_aware_init,
             use_bias=False,
             dtype=jnp.bfloat16,
-            param_dtype=jnp.bfloat16,
+            param_dtype=jnp.float32,
             rngs=rngs
         )
         
@@ -169,7 +169,7 @@ class TransformerBlock(nnx.Module):
             kernel_init=nnx.initializers.zeros,
             use_bias=False,
             dtype=jnp.bfloat16,
-            param_dtype=jnp.bfloat16,
+            param_dtype=jnp.float32,
             rngs=rngs
         )
 
@@ -203,7 +203,7 @@ class JAXGPT(nnx.Module):
             self.d_model,
             embedding_init=nnx.initializers.normal(stddev=1.0),
             dtype=jnp.bfloat16,
-            param_dtype=jnp.bfloat16,
+            param_dtype=jnp.float32,
             rngs=rngs
         )
 
@@ -220,7 +220,7 @@ class JAXGPT(nnx.Module):
             kernel_init=nnx.initializers.zeros,
             use_bias=False,
             dtype=jnp.bfloat16,
-            param_dtype=jnp.bfloat16,
+            param_dtype=jnp.float32,
             rngs=rngs
         )
 
@@ -358,7 +358,7 @@ class JAXGPT(nnx.Module):
         )
 
         # ==================== TRAINING STEP ====================
-        @jax.jit
+        @nnx.jit
         def train_step(model, batch, adam_opt, muon_opt):
             input_tokens = batch[:, :-1]
             target_tokens = batch[:, 1:]
@@ -390,8 +390,8 @@ class JAXGPT(nnx.Module):
             })
 
             # Update weights through optimizers
-            adam_opt.update(model, adam_grads)
-            muon_opt.update(model, muon_grads)
+            adam_opt.update(model, grads=adam_grads)
+            muon_opt.update(model, grads=muon_grads)
 
             return loss
 
