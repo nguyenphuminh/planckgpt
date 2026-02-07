@@ -8,7 +8,7 @@ if __name__ == "__main__":
 
     # Initialize model
     chatbot = ChatBot()
-    chatbot = torch.compile(chatbot, mode="max-autotune")
+    chatbot = torch.compile(chatbot, mode="max-autotune", dynamic=False)
 
     print(f"Using device: {chatbot.device}")
     print(f"Model parameters: {sum(p.numel() for p in chatbot.parameters()):,}")

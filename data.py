@@ -9,6 +9,8 @@ def load_data(
     subset="sample-10BT",
     split="train"
 ):
+    """Data loader for pretraining"""
+
     # Download full dataset (no streaming)
     dataset = load_dataset(dataset_name, name=subset, split=split)
     dataset_size = len(dataset)
@@ -41,6 +43,8 @@ def load_val_data(
     subset="sample-10BT",
     split="train"
 ):
+    """Data loader for validation"""
+
     # Download full dataset (no streaming)
     dataset = load_dataset(dataset_name, name=subset, split=split)
     dataset_size = len(dataset)
@@ -65,12 +69,14 @@ def load_val_data(
         
         yield combined_text
 
-def load_finetune_data(
+def load_midtrain_data(
     start=0,
     end=None,  # None means load full datasets
     step=25000,
     identity_json_path="./data/identity.json"
 ):
+    """Data loader for midtraining"""
+
     all_data = []
 
     # Define datasets with row limits
