@@ -1,6 +1,8 @@
 # PlanckGPT
 
-PlanckGPT (planck length reference :D) is my attempt to make a tiny language model from scratch mostly for fun and educational purposes, but also to see how far a consumer-level computer can go in AI development. It has about 150m parameters and is pretrained on roughly 3 billion tokens of the Fineweb-edu dataset and finetuned with specifications I will mention below. This is small compared to modern LLMs' standards, which also explains why it is goofy when you use it (lol), but you can definitely train this on a mid-range card for just 1-2 days, and it can still generate proper English and data that should be related to the user's prompt (its pretrain performance roughly matches that of GPT2 just so you know).
+PlanckGPT (planck length reference :D) is my attempt to make a tiny language model from scratch mostly for fun and educational purposes, but also to see how far a consumer-level computer can go in AI development. It has about 150m parameters and is pretrained on roughly 3 billion tokens of the Fineweb-edu dataset. This is small compared to modern LLMs' standards, and it only does next token prediction, but you can definitely train this on a mid-range card for just 1-2 days. Its performance should match that of a GPT2-small, with ~3.15 val loss on Fineweb-edu.
+
+In previous versions, there are also finetuning code and a chat model, but I have decided to remove them for now due to low quality. There is on-going development for that in [this branch](https://github.com/nguyenphuminh/planckgpt/tree/big-fix-1) though.
 
 ## Setup
 
@@ -29,8 +31,6 @@ python inference.py
 
 A prompt will appear for you to chat with the model.
 
-If you want to run the pretrained model only with no finetuning at all, then simply download `chatbot_pretrained.pth` from the releases page and move it to this directory. You have to do this because the pretrained model does not have user or assistant distinctions and have to be treated differently.
-
 ## Pretraining
 
 To pretrain the model from scratch, run:
@@ -40,20 +40,6 @@ python train.py
 
 The model will train with 3b+ tokens with 20 150m-token segments (estimated 40 hours on my Laptop RTX 5070 Mobile), and after each epoch it will save the current model to `./chatbot.pth`.
 
-## Finetuning
-
-To finetune, simply rename your model file into `chatbot_continue.pth` and run:
-```sh
-python midtrain.py
-```
-
-This will run the mid-training process, and it will save the finetuned model to `./chatbot.pth` just like pretraining does. When finished, rename it back to `chatbot_continue.pth` and run:
-```sh
-python sft.py
-```
-
-The output model is also in `./chatbot.pth`.
-
 ## Architecture
 
 Currently it uses:
@@ -62,44 +48,21 @@ Currently it uses:
 * Embedding: 768-dimensional token embedding.
 * Rotary positional embedding.
 * Transformer: 12 decoder layers, 6 heads, 3072 d_ffn, 768 d_model.
-* Multi-Query Attention with flash attention support (sdpa).
+* Multi-Query Attention with merged qkv.
 * Squared ReLU for activation.
 * RMSNorm without learnable params for normalization, applied how you would expect, but also used on QK, embedding, and before output projection.
 * Output: Linear layer to vocabulary.
 
-and is trained with:
+and is pretrained with:
 
 * Dataset: Fineweb-edu (~3b tokens).
 * Context Window: 1024 tokens.
 * Batch Size: 4 (effective batch size: 512 with gradient accumulation).
-* Muon optimizer for transformer weights, 8-bit Adam optimizer for embedding and output projection.
+* NorMuon optimizer for transformer weights, 8-bit Adam optimizer for embedding and output projection.
 * Stable LR for the first 55% of the steps, LinearLR decay to 0.1x for the rest.
 * BF16 mixed precision training and other Blackwell-specific features.
-* Training with torch.compile on "max-autotune" mode.
+* Training with torch.compile on "max-autotune" mode and `dynamic=False`.
 * Gradient checkpointing in 2/3 of the transformer layers.
-
-and is finetuned with:
-
-* Midtrain:
-    * Smol-smoltalk (460k rows).
-    * MMLU (100k rows).
-    * GSM8K (8k rows).
-    * Custom identity json (1000 rows, repeated 4 times, generated from Claude Haiku 4.5).
-    * Same configuration as pretraining, but with 80% stable LR range.
-* SFT:
-    * Smol-smoltalk (10k rows).
-    * Arc-Easy (2300 rows).
-    * Arc-Challenge (1100 rows).
-    * Custom identity json (similar to above, but repeated 2 times).
-    * Same configuration as pretraining, but LR decays right from the start of training and decays to 0.
-
-and generates text with:
-
-* Sampling: Top-k sampling (k=50).
-* Temperature: 0.7.
-* Context Window: 1024 tokens.
-* Stopping: EOS token for fixed limit (10240 by default).
-* KV cache for faster inference.
 
 The current configuration is designed to squeeze out the best possible performance out of an 8gb 5070 Mobile, you can change the configs to match your card.
 
