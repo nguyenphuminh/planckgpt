@@ -441,7 +441,7 @@ class ChatBot(nn.Module):
         prompt,
         context_window=1024,
         max_length=4096,
-        temperature=0.8,
+        temperature=0.7,
         topk=50
     ):
         """Text generation function"""

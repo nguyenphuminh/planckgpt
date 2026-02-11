@@ -15,7 +15,7 @@ if __name__ == "__main__":
     # Pretrain
     chatbot.train_model(
         load_data(),
-        load_val_data()
+        [*load_val_data()] # Loads one time into memory
     )
     
     # Final save
