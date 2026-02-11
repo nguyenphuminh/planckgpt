@@ -62,7 +62,7 @@ and is pretrained with:
 * Stable LR for the first 55% of the steps, LinearLR decay to 0.1x for the rest.
 * BF16 mixed precision training and other Blackwell-specific features.
 * Training with torch.compile on "max-autotune" mode and `dynamic=False`.
-* Gradient checkpointing in 2/3 of the transformer layers.
+* Gradient checkpointing in 1/3 of the transformer layers.
 
 The current configuration is designed to squeeze out the best possible performance out of an 8gb 5070 Mobile, you can change the configs to match your card.
 
