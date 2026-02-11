@@ -64,6 +64,14 @@ and is pretrained with:
 * Training with torch.compile on "max-autotune" mode and `dynamic=False`.
 * Gradient checkpointing in 1/3 of the transformer layers.
 
+and generates text with:
+
+* Sampling: Top-k sampling (k=50).
+* Temperature: 0.8.
+* Context Window: 1024 tokens.
+* Stopping: EOS token for fixed limit (10240 by default).
+* KV cache for faster inference.
+
 The current configuration is designed to squeeze out the best possible performance out of an 8gb 5070 Mobile, you can change the configs to match your card.
 
 ## Acknowledgements
