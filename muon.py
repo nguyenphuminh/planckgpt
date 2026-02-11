@@ -1,86 +1,194 @@
-"""
-Muon optimizer from Keller et al.
-Also a lot of borrowing of ideas from modded-nanogpt.
-"""
+"""Effectively NorMuon from modded-nanogpt but with a more Pytorch optimizer ish interface"""
+
 import torch
-from torch import Tensor
+from torch.optim.optimizer import Optimizer
 
-@torch.compile
-def zeropower_via_newtonschulz5(G: Tensor, steps: int) -> Tensor:
+# Coefficients for Polar Express (num_iters=5)
+POLAR_EXPRESS_COEFFS = [
+    (8.156554524902461, -22.48329292557795, 15.878769915207462),
+    (4.042929935166739, -2.808917465908714, 0.5000178451051316),
+    (3.8916678022926607, -2.772484153217685, 0.5060648178503393),
+    (3.285753657755655, -2.3681294933425376, 0.46449024233003106),
+    (2.3465413258596377, -1.7097828382687081, 0.42323551169305323),
+]
+
+class Muon(Optimizer):
     """
-    Newton-Schulz iteration to compute the zeroth power / orthogonalization of G. We opt to use a
-    quintic iteration whose coefficients are selected to maximize the slope at zero. For the purpose
-    of minimizing steps, it turns out to be empirically effective to keep increasing the slope at
-    zero even beyond the point where the iteration no longer converges all the way to one everywhere
-    on the interval. This iteration therefore does not produce UV^T but rather something like US'V^T
-    where S' is diagonal with S_{ii}' ~ Uniform(0.5, 1.5), which turns out not to hurt model
-    performance at all relative to UV^T, where USV^T = G is the SVD.
+    Muon optimizer - Orthogonalized gradients with per-neuron variance normalization.
+    
+    Args:
+        params: Iterable of parameters to optimize
+        lr: Learning rate (default: 0.02)
+        momentum: Nesterov momentum coefficient (default: 0.95)
+        weight_decay: Cautious weight decay coefficient (default: 0.0)
+        beta2: Second moment decay rate for variance reduction (default: 0.95)
+        ns_steps: Number of Polar Express iterations (default: 5, max: 5)
     """
-    assert G.ndim >= 2 # batched Muon implementation by @scottjmaddox, and put into practice in the record by @YouJiacheng
-    a, b, c = (3.4445, -4.7750,  2.0315)
-    X = G.bfloat16()
-    if G.size(-2) > G.size(-1):
-        X = X.mT
-
-    # Ensure spectral norm is at most 1
-    X = X / (X.norm(dim=(-2, -1), keepdim=True) + 1e-7)
-    # Perform the NS iterations
-    for _ in range(steps):
-        A = X @ X.mT
-        B = b * A + c * A @ A # quintic computation strategy adapted from suggestion by @jxbz, @leloykun, and @YouJiacheng
-        X = a * X + B @ X
-
-    if G.size(-2) > G.size(-1):
-        X = X.mT
-    return X
-
-class Muon(torch.optim.Optimizer):
-    """
-    Muon - MomentUm Orthogonalized by Newton-schulz
-
-    https://kellerjordan.github.io/posts/muon/
-
-    Muon internally runs standard SGD-momentum, and then performs an orthogonalization post-
-    processing step, in which each 2D parameter's update is replaced with the nearest orthogonal
-    matrix. To efficiently orthogonalize each update, we use a Newton-Schulz iteration, which has
-    the advantage that it can be stably run in bfloat16 on the GPU.
-
-    Some warnings:
-    - This optimizer should not be used for the embedding layer, the final fully connected layer,
-    or any {0,1}-D parameters; those should all be optimized by a standard method (e.g., AdamW).
-    - To use it with 4D convolutional filters, it works well to just flatten their last 3 dimensions.
-
-    Arguments:
-        lr: The learning rate used by the internal SGD.
-        momentum: The momentum used by the internal SGD.
-        nesterov: Whether to use Nesterov-style momentum in the internal SGD. (recommended)
-        ns_steps: The number of Newton-Schulz iteration steps to use.
-    """
-    def __init__(self, params, lr=0.02, momentum=0.95, nesterov=True, ns_steps=5):
-        defaults = dict(lr=lr, momentum=momentum, nesterov=nesterov, ns_steps=ns_steps)
-        params: list[Tensor] = [*params]
-        param_groups = []
-        for size in {p.numel() for p in params}:
-            group = dict(params=[p for p in params if p.numel() == size])
-            param_groups.append(group)
-        super().__init__(param_groups, defaults)
-
+    
+    def __init__(
+        self,
+        params,
+        lr: float = 0.02,
+        momentum: float = 0.95,
+        weight_decay: float = 0.0,
+        beta2: float = 0.95,
+        ns_steps: int = 5,
+    ):
+        if not 0.0 <= lr:
+            raise ValueError(f"Invalid learning rate: {lr}")
+        if not 0.0 <= momentum < 1.0:
+            raise ValueError(f"Invalid momentum: {momentum}")
+        if not 0.0 <= weight_decay:
+            raise ValueError(f"Invalid weight_decay: {weight_decay}")
+        if not 0.0 <= beta2 < 1.0:
+            raise ValueError(f"Invalid beta2: {beta2}")
+        if not 1 <= ns_steps <= 5:
+            raise ValueError(f"Invalid ns_steps: {ns_steps} (must be 1-5)")
+        
+        defaults = dict(
+            lr=lr,
+            momentum=momentum,
+            weight_decay=weight_decay,
+            beta2=beta2,
+            ns_steps=ns_steps,
+        )
+        super().__init__(params, defaults)
+    
     @torch.no_grad()
-    def step(self):
+    def step(self, closure=None):
+        """Perform a single optimization step."""
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+        
         for group in self.param_groups:
-            params: list[Tensor] = group["params"]
-            for p in params:
-                g = p.grad
-                assert g is not None
-                state = self.state[p]
-                if "momentum_buffer" not in state:
-                    state["momentum_buffer"] = torch.zeros_like(g)
-                buf: Tensor = state["momentum_buffer"]
-                buf.lerp_(g, 1 - group["momentum"])
-                g = g.lerp_(buf, group["momentum"]) if group["nesterov"] else buf
-                g = zeropower_via_newtonschulz5(g, steps=group["ns_steps"])
-                p.add_(g, alpha=-group["lr"] * max(1, p.size(-2) / p.size(-1))**0.5)
-
-def get_muon_momentum(step):
-    frac = min(step / 300, 1)
-    return (1 - frac) * 0.85 + frac * 0.95
+            lr = group["lr"]
+            momentum = group["momentum"]
+            weight_decay = group["weight_decay"]
+            beta2 = group["beta2"]
+            ns_steps = group["ns_steps"]
+            
+            # Collect all 2D parameters (weight matrices) in this group
+            params_2d = [p for p in group["params"] if p.grad is not None and p.dim() >= 2]
+            
+            if not params_2d:
+                continue
+            
+            # Process each parameter
+            for param in params_2d:
+                grad = param.grad
+                state = self.state[param]
+                
+                # State initialization
+                if len(state) == 0:
+                    state["step"] = 0
+                    # First moment (momentum buffer)
+                    state["momentum_buffer"] = torch.zeros_like(grad)
+                    # Second moment (per-neuron variance) - factored representation
+                    # Store as column vector or row vector to save memory
+                    if grad.size(-2) <= grad.size(-1):
+                        # Store per-output-neuron variance (column)
+                        state["variance"] = torch.zeros(
+                            grad.shape[:-1] + (1,),
+                            dtype=torch.float32,
+                            device=grad.device
+                        )
+                        state["reduction_dim"] = -1
+                    else:
+                        # Store per-input-neuron variance (row)
+                        state["variance"] = torch.zeros(
+                            grad.shape[:-2] + (1, grad.shape[-1]),
+                            dtype=torch.float32,
+                            device=grad.device
+                        )
+                        state["reduction_dim"] = -2
+                
+                state["step"] += 1
+                
+                # Get state
+                momentum_buffer = state["momentum_buffer"]
+                variance = state["variance"]
+                reduction_dim = state["reduction_dim"]
+                
+                # Step 1: Nesterov momentum
+                momentum_buffer.lerp_(grad, 1 - momentum)
+                g = (1 - momentum) * grad + momentum * momentum_buffer
+                
+                # Step 2: Polar Express orthogonalization
+                g = self._polar_express(g, ns_steps)
+                
+                # Step 3: Variance reduction (per-neuron adaptive learning rate)
+                g = self._variance_reduction(g, variance, beta2, reduction_dim)
+                
+                # Step 4: Cautious weight decay + parameter update
+                if weight_decay > 0:
+                    # Only apply weight decay when gradient and param have same sign
+                    mask = (g * param) >= 0
+                    param.sub_(lr * g + lr * weight_decay * param * mask)
+                else:
+                    param.sub_(lr * g)
+        
+        return loss
+    
+    def _polar_express(
+        self, 
+        g: torch.Tensor, 
+        ns_steps: int
+    ) -> torch.Tensor:
+        """
+        Orthogonalize gradient via Polar Express iteration.
+        Computes Q from the polar decomposition G = Q·P.
+        """
+        # Convert to bfloat16 for speed, normalize
+        X = g.bfloat16()
+        X = X / (X.norm(dim=(-2, -1), keepdim=True) * 1.02 + 1e-6)
+        
+        # Choose iteration based on matrix shape
+        if g.size(-2) > g.size(-1):
+            # Tall matrix - use X.T @ X formulation
+            for a, b, c in POLAR_EXPRESS_COEFFS[:ns_steps]:
+                A = X.mT @ X
+                B = b * A + c * (A @ A)
+                X = a * X + X @ B
+        else:
+            # Wide matrix - use X @ X.T formulation  
+            for a, b, c in POLAR_EXPRESS_COEFFS[:ns_steps]:
+                A = X @ X.mT
+                B = b * A + c * (A @ A)
+                X = a * X + B @ X
+        
+        return X.to(g.dtype)
+    
+    def _variance_reduction(
+        self,
+        g: torch.Tensor,
+        variance: torch.Tensor,
+        beta2: float,
+        reduction_dim: int,
+    ) -> torch.Tensor:
+        """
+        Normalize per-neuron update scale using variance tracking.
+        Similar to Adam's second moment, but factored per-neuron.
+        """
+        # Compute per-neuron variance
+        v_mean = g.float().square().mean(dim=reduction_dim, keepdim=True)
+        
+        # Update EMA of variance
+        variance.lerp_(v_mean.to(variance.dtype), 1 - beta2)
+        
+        # Compute adaptive step size (like Adam's 1/sqrt(v))
+        step_size = variance.clamp_min(1e-10).rsqrt()
+        
+        # Normalize to preserve total update magnitude
+        # This ensures we don't change the overall learning rate scale
+        reduction_dim_size = g.size(reduction_dim)
+        v_norm_sq = (v_mean * reduction_dim_size).sum(dim=(-2, -1), keepdim=True)
+        v_norm = v_norm_sq.sqrt()
+        
+        scaled_sq_sum = (v_mean * reduction_dim_size) * step_size.float().square()
+        v_norm_new = scaled_sq_sum.sum(dim=(-2, -1), keepdim=True).sqrt()
+        
+        final_scale = step_size * (v_norm / v_norm_new.clamp_min(1e-10))
+        
+        return g * final_scale.to(g.dtype)

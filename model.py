@@ -6,23 +6,23 @@ import torch.nn.functional as F
 from torch.optim.lr_scheduler import LinearLR
 from torch.utils.checkpoint import checkpoint
 from torch.amp import autocast
-from muon import Muon, get_muon_momentum
+from muon import Muon
 from bitsandbytes.optim import Adam8bit
 import numpy as np
 
-# RMS norm with no learnable params
 def rms_norm(x):
+    """RMS norm with no learnable params"""
     return F.rms_norm(x, (x.size(-1),))
 
-# Rotate embeddings for RoPE
 def apply_rotary_emb(x, cos, sin):
+    """Utility to rotate embeddings for RoPE"""
     x1, x2 = torch.chunk(x, 2, dim=-1)
     y1 = x1 * cos + x2 * sin
     y2 = x1 * (-sin) + x2 * cos
     return torch.cat((y1, y2), dim=-1)
 
-# MQA for less memory use
 class MultiQueryAttention(nn.Module):
+    """MQA with kv cache support for the least memory use possible"""
     def __init__(self, dim, num_heads):
         super().__init__()
         assert dim % num_heads == 0
@@ -30,17 +30,24 @@ class MultiQueryAttention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
 
-        self.q_proj = nn.Linear(dim, dim, bias=False)
-        self.k_proj = nn.Linear(dim, self.head_dim, bias=False)
-        self.v_proj = nn.Linear(dim, self.head_dim, bias=False)
+        self.qkv_proj = nn.Linear(dim, dim + 2 * self.head_dim, bias=False)
         self.out_proj = nn.Linear(dim, dim, bias=False)
 
     def forward(self, x, cos, sin, kv_cache=None):
         B, L, _ = x.shape
 
-        q = self.q_proj(x).view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
-        k = self.k_proj(x).view(B, L, 1, self.head_dim).transpose(1, 2)
-        v = self.v_proj(x).view(B, L, 1, self.head_dim).transpose(1, 2)
+        # Merge qkv projection
+        qkv = self.qkv_proj(x)
+
+        # Split into q, k, v
+        q = qkv[..., :self.num_heads * self.head_dim]
+        k = qkv[..., self.num_heads * self.head_dim : self.num_heads * self.head_dim + self.head_dim]
+        v = qkv[..., self.num_heads * self.head_dim + self.head_dim:]
+
+        # Reshape
+        q = q.view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
+        k = k.view(B, L, 1, self.head_dim).transpose(1, 2)
+        v = v.view(B, L, 1, self.head_dim).transpose(1, 2)
 
         # RoPE
         q = apply_rotary_emb(q, cos, sin)
@@ -85,8 +92,8 @@ class MultiQueryAttention(nn.Module):
 
         return self.out_proj(out.transpose(1, 2).reshape(B, L, -1)), new_kv_cache
 
-# Transformer block
 class Transformer(nn.Module):
+    """Transformer block with MQA and Squared Relu activation"""
     def __init__(self, dim, num_heads, dim_ff):
         super().__init__()
 
@@ -102,8 +109,8 @@ class Transformer(nn.Module):
         x = x + self.ffn2(F.relu(self.ffn1(rms_norm(x))).square())
         return x, new_kv_cache
 
-# Main chatbot model
 class ChatBot(nn.Module):
+    """ChatBot class containing the model, training loop, and other utilities"""
     def __init__(self, options={}):
         super().__init__()
 
@@ -119,7 +126,7 @@ class ChatBot(nn.Module):
         self.rotary_seq_len = options.get("rotary_seq_len", 1024)
 
         # Embedding
-        self.embedding = nn.Embedding(self.vocab_size, self.d_model, dtype=torch.bfloat16)
+        self.embedding = nn.Embedding(self.vocab_size, self.d_model)
 
         # Transformer decoder layers
         self.transformer = nn.ModuleList([
@@ -133,14 +140,6 @@ class ChatBot(nn.Module):
         # One-hot output
         self.output = nn.Linear(self.d_model, self.vocab_size, bias=False)
 
-        # Apply weight init
-        self.apply(self._init_weights)
-        # Zero out specific output projections for residual paths
-        for layer in self.transformer:
-            torch.nn.init.zeros_(layer.attn.out_proj.weight)
-            torch.nn.init.zeros_(layer.ffn2.weight)
-        torch.nn.init.zeros_(self.output.weight)
-
         # Device
         if torch.cuda.is_available():
             torch.backends.cudnn.benchmark = True
@@ -151,6 +150,9 @@ class ChatBot(nn.Module):
             self.device = options.get("device", torch.device("cpu"))
         self.to(self.device)
 
+        # Weight init
+        self.init_weights()
+
         # Precompute cos and sin
         self.cos, self.sin = self._precompute_rotary_embeddings(self.rotary_seq_len, self.d_model // self.num_heads)
 
@@ -158,20 +160,44 @@ class ChatBot(nn.Module):
         self.kv_caches = []
         self.use_kv_cache = False
 
-    def _init_weights(self, module):
-        # Yoinked from nanochat basically, depth-aware weight init
-        if isinstance(module, nn.Linear):
-            fan_out = module.weight.size(0)
-            fan_in = module.weight.size(1)
-            std = 1.0 / math.sqrt(fan_in) * min(1.0, math.sqrt(fan_out / fan_in))
-
-            torch.nn.init.normal_(module.weight, mean=0.0, std=std)
-            if module.bias is not None:
-                torch.nn.init.zeros_(module.bias)
-        elif isinstance(module, nn.Embedding):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=1.0)
+    def init_weights(self):
+        """
+        Initialize weights following nanochat approach:
+        - Embedding: normal, std=1.0
+        - Output: normal, std=0.001
+        - Attention Q,K,V & FFN: uniform, std=1/sqrt(d_model)
+        - Output projections (attn.out_proj, ffn2): zeros
+        """
+        # Embedding
+        torch.nn.init.normal_(self.embedding.weight, mean=0.0, std=1.0)
+        
+        # Output head - small init instead of zeros
+        torch.nn.init.normal_(self.output.weight, mean=0.0, std=0.001)
+        
+        # Transformer blocks: uniform init with bound = sqrt(3) * std
+        s = 3**0.5 * self.d_model**-0.5  # sqrt(3)/sqrt(d_model)
+        
+        for layer in self.transformer:
+            # Attention projections (Q, K, V)
+            torch.nn.init.uniform_(layer.attn.qkv_proj.weight, -s, s)
+            
+            # Attention output projection - zero
+            torch.nn.init.zeros_(layer.attn.out_proj.weight)
+            
+            # FFN first layer - uniform
+            if hasattr(layer, "ffn1"):
+                torch.nn.init.uniform_(layer.ffn1.weight, -s, s)
+            
+            # FFN output projection - zero
+            torch.nn.init.zeros_(layer.ffn2.weight)
+        
+        # Cast embeddings to bfloat16 if on CUDA
+        if self.embedding.weight.device.type == "cuda":
+            self.embedding.to(dtype=torch.bfloat16)
 
     def _precompute_rotary_embeddings(self, seq_len, head_dim, base=10000):
+        """Utility to precompute rotary embeddings for RoPE"""
+
         # Stride the channels
         channel_range = torch.arange(0, head_dim, 2, dtype=torch.float32, device=self.device)
         inv_freq = 1.0 / (base ** (channel_range / head_dim))
@@ -241,16 +267,20 @@ class ChatBot(nn.Module):
     def train_model(
         self,
         data_loader,
+        val_data_loader=None,
+        num_segments=20,
         sequence_length=1024,
         batch_size=4,
         gradient_accumulation_steps=128,
         adam_lr=0.008,
         adam_betas=(0.65, 0.95),
-        muon_lr=0.06,
+        muon_lr=0.02,
         stable_range=0.55,
-        total_steps=5277,
+        total_steps=5722,
         max_decay=0.1
     ):
+        """Training loop"""
+
         print(f"Training with batch_size={batch_size}, gradient_accumulation_steps={gradient_accumulation_steps}")
         print(f"Effective batch size: {batch_size * gradient_accumulation_steps}")
 
@@ -271,7 +301,7 @@ class ChatBot(nn.Module):
 
         # Muon for transformer params
         transformer_params = [p for n, p in self.named_parameters() if "embedding" not in n and "output" not in n]
-        muon_opt = Muon(transformer_params, lr=muon_lr, momentum=0.95)
+        muon_opt = Muon(transformer_params, lr=muon_lr)
         muon_cooldown_scheduler = LinearLR(muon_opt, start_factor=1.0, end_factor=max_decay, total_iters=cooldown_steps)
 
         # Track optimizer step for Muon momentum update
@@ -287,8 +317,6 @@ class ChatBot(nn.Module):
                 adam_opt.zero_grad(set_to_none=True)
 
             # Muon step
-            for group in muon_opt.param_groups:
-                group["momentum"] = get_muon_momentum(optimizer_step)
             muon_opt.step()
             muon_opt.zero_grad(set_to_none=True)
 
@@ -320,6 +348,11 @@ class ChatBot(nn.Module):
             muon_opt.zero_grad(set_to_none=True)
 
             for batch_start in range(0, len(sequences), batch_size):
+                # Skip incomplete batches to avoid recompilation
+                if batch_start + batch_size > len(sequences):
+                    continue
+
+                # Get batch input and target
                 batch_sequences = torch.tensor(sequences[batch_start:batch_start + batch_size], dtype=torch.long, device=self.device)
                 input_tokens = batch_sequences[:, :-1]
                 target_tokens = batch_sequences[:, 1:]
@@ -343,7 +376,7 @@ class ChatBot(nn.Module):
                     optimizer_step += 1
 
             # Final update if needed
-            if num_batches % gradient_accumulation_steps != 0:
+            if num_batches % gradient_accumulation_steps != 0 and segment_index == num_segments - 1:
                 opt_step()
                 optimizer_step += 1
 
@@ -352,8 +385,54 @@ class ChatBot(nn.Module):
             adamw_current_lr = adam_opt.param_groups[0]["lr"]
             muon_current_lr = muon_opt.param_groups[0]["lr"]
 
+            # Validation if val_data_loader provided
+            val_info = ""
+            if val_data_loader is not None:
+                self.eval()
+                val_loss = 0
+                val_tokens = 0
+                
+                with torch.no_grad():
+                    for val_segment in val_data_loader:
+                        # Encode segment to tokens
+                        val_tokens_array = np.array(self.text_to_tokens(val_segment))
+                        
+                        # Truncate to fit exact number of sequences
+                        val_num_sequences = len(val_tokens_array) // sequence_length
+                        val_truncated = val_tokens_array[:val_num_sequences * sequence_length]
+                        # Reshape into 2D array
+                        val_sequences = val_truncated.reshape(val_num_sequences, sequence_length)
+                        
+                        for batch_start in range(0, len(val_sequences), batch_size):
+                            # Skip incomplete batches to avoid recompilation
+                            if batch_start + batch_size > len(val_sequences):
+                                continue
+
+                            batch_sequences = torch.tensor(val_sequences[batch_start:batch_start + batch_size], dtype=torch.long, device=self.device)
+                            input_tokens = batch_sequences[:, :-1]
+                            target_tokens = batch_sequences[:, 1:]
+
+                            # Enable mixed precision
+                            with autocast(device_type=self.device.type, dtype=torch.bfloat16):
+                                output = self.forward(input_tokens)  # [batch_size, seq_len-1, vocab_size]
+                                output = output.reshape(-1, self.vocab_size)  # [batch_size * seq_len-1, vocab_size]
+                                target_tokens = target_tokens.reshape(-1)  # [batch_size * seq_len-1]
+                                loss = criterion(output, target_tokens)
+
+                            val_loss += loss.item() * target_tokens.size(0)
+                            val_tokens += target_tokens.size(0)
+
+                avg_val_loss = val_loss / val_tokens if val_tokens > 0 else 0
+                val_perplexity = math.exp(avg_val_loss) if avg_val_loss < 20 else float("inf")
+                val_info = f", Val Loss: {avg_val_loss:.4f}, Val Perplexity: {val_perplexity:.2f}"
+
             # Log and save
-            print(f"Segment {segment_index + 1}: Loss: {avg_loss:.4f}, AdamW LR: {adamw_current_lr:.6f}, Muon LR: {muon_current_lr:.6f}, Batches: {num_batches}")
+            print(
+                f"Segment {segment_index + 1}: "
+                f"Loss: {avg_loss:.4f}{val_info}, "
+                f"AdamW LR: {adamw_current_lr:.6f}, "
+                f"Muon LR: {muon_current_lr:.6f}, Batches: {num_batches}"
+            )
             self.save()
             print(f"Segment {segment_index + 1}: Saved to chatbot.pth")
 
@@ -363,16 +442,17 @@ class ChatBot(nn.Module):
         context_window=1024,
         max_length=4096,
         temperature=0.8,
-        topk=50,
-        memory=[]
+        topk=50
     ):
+        """Text generation function"""
+
         self.eval()
         # Enable kv cache and reset previous kv caches
         self.kv_caches = []
         self.use_kv_cache = True
 
         with torch.inference_mode():
-            current_tokens = memory + self.text_to_tokens(prompt)
+            current_tokens = self.text_to_tokens(prompt)
 
             # Stack in case a char is made up of multiple tokens
             word_stack = []
@@ -405,12 +485,8 @@ class ChatBot(nn.Module):
 
                 torch.cuda.empty_cache()
 
-                if (
-                    # Stop on eos token and conversation overlap
-                    next_token_id == self.eos_token_id or
-                    # Stop on "User: or Assistant:" or "UserUser"-ish hallucinations
-                    ((next_token_id == 25 or next_token_id in [12982, 48902]) and current_tokens[-1] in [12982, 48902])
-                ):
+                # Stop on eos token and conversation overlap
+                if next_token_id == self.eos_token_id:
                     current_tokens.pop()
                     break
 
@@ -421,12 +497,8 @@ class ChatBot(nn.Module):
                 word_stack.append(next_token_id)
                 decoded_word = self.tokens_to_text(word_stack)
 
-                if (
-                    "\ufffd" not in decoded_word and
-                    "User" not in decoded_word and
-                    "Assistant" not in decoded_word
-                ):
-                    print(decoded_word, end="")
+                if "\ufffd" not in decoded_word:
+                    yield decoded_word
                     word_stack = []
 
                 # Reset kv cache if too long
@@ -440,75 +512,8 @@ class ChatBot(nn.Module):
 
         return current_tokens[-context_window:]
 
-    def validate_model(self, data_loader, sequence_length=1024, batch_size=4):
-        print(f"Running validation with batch_size={batch_size}, sequence_length={sequence_length}")
-
-        # Cap context window
-        sequence_length = min(sequence_length, self.rotary_seq_len)
-
-        # Set model to eval mode
-        self.eval()
-
-        criterion = nn.CrossEntropyLoss()
-
-        total_loss = 0
-        total_tokens = 0
-        num_segments = 0
-
-        # No gradient computation during validation
-        with torch.no_grad():
-            for segment_index, segment in enumerate(data_loader):
-                # Encode segment to tokens (same as training)
-                tokens = self.text_to_tokens(segment)
-                print(f"Val Segment {segment_index + 1}: {len(segment)} chars -> {len(tokens)} tokens")
-
-                # Pre-create all sequences (same as training)
-                sequences = []
-                for start_idx in range(0, len(tokens) - sequence_length, sequence_length):
-                    sequence = tokens[start_idx:start_idx + sequence_length]
-                    if len(sequence) == sequence_length:
-                        sequences.append(sequence)
-
-                print(f"Val Segment {segment_index + 1}: Pre-computed {len(sequences)} sequences in memory")
-
-                segment_loss = 0
-                segment_tokens = 0
-
-                # Process batches (same as training)
-                for batch_start in range(0, len(sequences), batch_size):
-                    batch_sequences = torch.tensor(sequences[batch_start:batch_start + batch_size], device=self.device)
-                    input_tokens = batch_sequences[:, :-1]
-                    target_tokens = batch_sequences[:, 1:]
-
-                    # Enable mixed precision (same as training)
-                    with autocast(device_type=self.device.type, dtype=torch.bfloat16):
-                        output = self.forward(input_tokens)  # [batch_size, seq_len-1, vocab_size]
-                        output = output.reshape(-1, self.vocab_size)  # [batch_size * seq_len-1, vocab_size]
-                        target_tokens = target_tokens.reshape(-1)  # [batch_size * seq_len-1]
-                        loss = criterion(output, target_tokens)
-
-                    segment_loss += loss.item() * target_tokens.size(0)
-                    segment_tokens += target_tokens.size(0)
-
-                total_loss += segment_loss
-                total_tokens += segment_tokens
-                num_segments += 1
-
-                # Log segment validation results
-                avg_segment_loss = segment_loss / segment_tokens if segment_tokens > 0 else 0
-                avg_segment_perplexity = math.exp(avg_segment_loss) if avg_segment_loss < 20 else float("inf")
-                print(f"Val Segment {segment_index + 1}: Loss: {avg_segment_loss:.4f}, Perplexity: {avg_segment_perplexity:.2f}")
-
-        # Calculate overall validation metrics
-        avg_loss = total_loss / total_tokens if total_tokens > 0 else 0
-        perplexity = math.exp(avg_loss) if avg_loss < 20 else float("inf")
-
-        print(f"Segments: {num_segments}")
-        print(f"Total tokens: {total_tokens}")
-        print(f"Average Loss: {avg_loss:.4f}")
-        print(f"Perplexity: {perplexity:.2f}")
-
     def save(self, path="./chatbot.pth"):
+        """Utility to save model"""
         torch.save({
             "model_state_dict": self.state_dict(),
             "d_model": self.d_model,
@@ -520,11 +525,14 @@ class ChatBot(nn.Module):
         }, path)
 
     def load(self, path="./chatbot.pth"):
+        """Utility to load saved model"""
         checkpoint = torch.load(path, map_location=self.device)
         self.load_state_dict(checkpoint["model_state_dict"])
 
     def text_to_tokens(self, text):
+        """Utility to convert text string to list of tokens"""
         return self.encoding.encode(text, allowed_special={"<|endoftext|>"})
 
     def tokens_to_text(self, tokens):
+        """Utility to convert list of tokens to text string"""
         return self.encoding.decode(tokens)
