@@ -87,8 +87,8 @@ class Muon(Optimizer):
                     state["momentum_buffer"] = torch.zeros_like(grad)
                     # Second moment (per-neuron variance) - factored representation
                     # Store as column vector or row vector to save memory
-                    if grad.size(-2) <= grad.size(-1):
-                        # Store per-output-neuron variance (column)
+                    if grad.size(-2) >= grad.size(-1):
+                        # Tall/square: reduce along columns, store per-row variance
                         state["variance"] = torch.zeros(
                             grad.shape[:-1] + (1,),
                             dtype=torch.float32,
@@ -96,7 +96,7 @@ class Muon(Optimizer):
                         )
                         state["reduction_dim"] = -1
                     else:
-                        # Store per-input-neuron variance (row)
+                        # Wide: reduce along rows, store per-column variance
                         state["variance"] = torch.zeros(
                             grad.shape[:-2] + (1, grad.shape[-1]),
                             dtype=torch.float32,
@@ -142,7 +142,7 @@ class Muon(Optimizer):
         """
         # Convert to bfloat16 for speed, normalize
         X = g.bfloat16()
-        X = X / (X.norm(dim=(-2, -1), keepdim=True) * 1.02 + 1e-6)
+        X = X / (X.norm(dim=(-2, -1), keepdim=True) * 1.01 + 1e-6)
         
         # Choose iteration based on matrix shape
         if g.size(-2) > g.size(-1):

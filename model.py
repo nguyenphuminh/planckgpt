@@ -30,24 +30,18 @@ class MultiQueryAttention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
 
-        self.qkv_proj = nn.Linear(dim, dim + 2 * self.head_dim, bias=False)
+        self.q_proj = nn.Linear(dim, dim, bias=False)
+        self.k_proj = nn.Linear(dim, self.head_dim, bias=False)
+        self.v_proj = nn.Linear(dim, self.head_dim, bias=False)
         self.out_proj = nn.Linear(dim, dim, bias=False)
 
     def forward(self, x, cos, sin, kv_cache=None):
         B, L, _ = x.shape
 
-        # Merge qkv projection
-        qkv = self.qkv_proj(x)
-
-        # Split into q, k, v
-        q = qkv[..., :self.num_heads * self.head_dim]
-        k = qkv[..., self.num_heads * self.head_dim : self.num_heads * self.head_dim + self.head_dim]
-        v = qkv[..., self.num_heads * self.head_dim + self.head_dim:]
-
-        # Reshape
-        q = q.view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
-        k = k.view(B, L, 1, self.head_dim).transpose(1, 2)
-        v = v.view(B, L, 1, self.head_dim).transpose(1, 2)
+        # QKV projection
+        q = self.q_proj(x).view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
+        k = self.k_proj(x).view(B, L, 1, self.head_dim).transpose(1, 2)
+        v = self.v_proj(x).view(B, L, 1, self.head_dim).transpose(1, 2)
 
         # RoPE
         q = apply_rotary_emb(q, cos, sin)
@@ -169,7 +163,7 @@ class ChatBot(nn.Module):
         - Output projections (attn.out_proj, ffn2): zeros
         """
         # Embedding
-        torch.nn.init.normal_(self.embedding.weight, mean=0.0, std=1.0)
+        torch.nn.init.normal_(self.embedding.weight, mean=0.0, std=0.8)
         
         # Output head - small init instead of zeros
         torch.nn.init.normal_(self.output.weight, mean=0.0, std=0.001)
@@ -179,14 +173,16 @@ class ChatBot(nn.Module):
         
         for layer in self.transformer:
             # Attention projections (Q, K, V)
-            torch.nn.init.uniform_(layer.attn.qkv_proj.weight, -s, s)
+            torch.nn.init.uniform_(layer.attn.q_proj.weight, -s, s)
+            torch.nn.init.uniform_(layer.attn.k_proj.weight, -s, s)
+            torch.nn.init.uniform_(layer.attn.v_proj.weight, -s, s)
             
             # Attention output projection - zero
             torch.nn.init.zeros_(layer.attn.out_proj.weight)
             
             # FFN first layer - uniform
             if hasattr(layer, "ffn1"):
-                torch.nn.init.uniform_(layer.ffn1.weight, -s, s)
+                torch.nn.init.uniform_(layer.ffn1.weight, -s * 0.4, s * 0.4)
             
             # FFN output projection - zero
             torch.nn.init.zeros_(layer.ffn2.weight)
@@ -260,7 +256,7 @@ class ChatBot(nn.Module):
 
         # Logits softcapping
         softcap = 15.0
-        output = softcap * torch.tanh(output / softcap)
+        output = softcap * torch.tanh(output.float() / softcap)
         
         return output
 
@@ -273,7 +269,7 @@ class ChatBot(nn.Module):
         batch_size=4,
         gradient_accumulation_steps=128,
         adam_lr=0.008,
-        adam_betas=(0.65, 0.95),
+        adam_betas=(0.8, 0.95),
         muon_lr=0.02,
         stable_range=0.55,
         total_steps=5722,
@@ -301,7 +297,14 @@ class ChatBot(nn.Module):
 
         # Muon for transformer params
         transformer_params = [p for n, p in self.named_parameters() if "embedding" not in n and "output" not in n]
-        muon_opt = Muon(transformer_params, lr=muon_lr)
+        shape_groups = {}
+        for p in transformer_params:
+            shape_groups.setdefault(p.shape, []).append(p)
+        muon_param_groups = [
+            {"params": ps, "lr": muon_lr * max(1.0, shape[-2] / shape[-1]) ** 0.5}
+            for shape, ps in shape_groups.items()
+        ]
+        muon_opt = Muon(muon_param_groups)
         muon_cooldown_scheduler = LinearLR(muon_opt, start_factor=1.0, end_factor=max_decay, total_iters=cooldown_steps)
 
         # Track optimizer step for Muon momentum update
@@ -312,9 +315,8 @@ class ChatBot(nn.Module):
             torch.nn.utils.clip_grad_norm_(self.parameters(), 1.0)
 
             # AdamW step
-            if optimizer_step % 2 != 0:
-                adam_opt.step()
-                adam_opt.zero_grad(set_to_none=True)
+            adam_opt.step()
+            adam_opt.zero_grad(set_to_none=True)
 
             # Muon step
             muon_opt.step()
