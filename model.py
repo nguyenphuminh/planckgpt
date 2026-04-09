@@ -390,42 +390,7 @@ class ChatBot(nn.Module):
             # Validation if val_data_loader provided
             val_info = ""
             if val_data_loader is not None:
-                self.eval()
-                val_loss = 0
-                val_tokens = 0
-                
-                with torch.no_grad():
-                    for val_segment in val_data_loader:
-                        # Encode segment to tokens
-                        val_tokens_array = np.array(self.text_to_tokens(val_segment))
-                        
-                        # Truncate to fit exact number of sequences
-                        val_num_sequences = len(val_tokens_array) // sequence_length
-                        val_truncated = val_tokens_array[:val_num_sequences * sequence_length]
-                        # Reshape into 2D array
-                        val_sequences = val_truncated.reshape(val_num_sequences, sequence_length)
-                        
-                        for batch_start in range(0, len(val_sequences), batch_size):
-                            # Skip incomplete batches to avoid recompilation
-                            if batch_start + batch_size > len(val_sequences):
-                                continue
-
-                            batch_sequences = torch.tensor(val_sequences[batch_start:batch_start + batch_size], dtype=torch.long, device=self.device)
-                            input_tokens = batch_sequences[:, :-1]
-                            target_tokens = batch_sequences[:, 1:]
-
-                            # Enable mixed precision
-                            with autocast(device_type=self.device.type, dtype=torch.bfloat16):
-                                output = self.forward(input_tokens)  # [batch_size, seq_len-1, vocab_size]
-                                output = output.reshape(-1, self.vocab_size)  # [batch_size * seq_len-1, vocab_size]
-                                target_tokens = target_tokens.reshape(-1)  # [batch_size * seq_len-1]
-                                loss = criterion(output, target_tokens)
-
-                            val_loss += loss.item() * target_tokens.size(0)
-                            val_tokens += target_tokens.size(0)
-
-                avg_val_loss = val_loss / val_tokens if val_tokens > 0 else 0
-                val_perplexity = math.exp(avg_val_loss) if avg_val_loss < 20 else float("inf")
+                avg_val_loss, val_perplexity = self.evaluate(val_data_loader, sequence_length, batch_size)
                 val_info = f", Val Loss: {avg_val_loss:.4f}, Val Perplexity: {val_perplexity:.2f}"
 
             # Log and save
@@ -437,6 +402,49 @@ class ChatBot(nn.Module):
             )
             self.save()
             print(f"Segment {segment_index + 1}: Saved to chatbot.pth")
+
+    def evaluate(self, val_data_loader, sequence_length=1024, batch_size=4):
+        """Validation loop, returns avg loss and perplexity"""
+        self.eval()
+        val_loss = 0
+        val_tokens = 0
+
+        # Loss
+        criterion = nn.CrossEntropyLoss()
+
+        with torch.no_grad():
+            for val_segment in val_data_loader:
+                # Encode segment to tokens
+                val_tokens_array = np.array(self.text_to_tokens(val_segment))
+
+                # Truncate to fit exact number of sequences
+                val_num_sequences = len(val_tokens_array) // sequence_length
+                val_truncated = val_tokens_array[:val_num_sequences * sequence_length]
+                # Reshape into 2D array
+                val_sequences = val_truncated.reshape(val_num_sequences, sequence_length)
+
+                for batch_start in range(0, len(val_sequences), batch_size):
+                    # Skip incomplete batches to avoid recompilation
+                    if batch_start + batch_size > len(val_sequences):
+                        continue
+
+                    batch_sequences = torch.tensor(val_sequences[batch_start:batch_start + batch_size], dtype=torch.long, device=self.device)
+                    input_tokens = batch_sequences[:, :-1]
+                    target_tokens = batch_sequences[:, 1:]
+
+                    # Enable mixed precision
+                    with autocast(device_type=self.device.type, dtype=torch.bfloat16):
+                        output = self.forward(input_tokens)  # [batch_size, seq_len-1, vocab_size]
+                        output = output.reshape(-1, self.vocab_size)  # [batch_size * seq_len-1, vocab_size]
+                        target_tokens = target_tokens.reshape(-1)  # [batch_size * seq_len-1]
+                        loss = criterion(output, target_tokens)
+
+                    val_loss += loss.item() * target_tokens.size(0)
+                    val_tokens += target_tokens.size(0)
+
+        avg_val_loss = val_loss / val_tokens if val_tokens > 0 else 0
+        val_perplexity = math.exp(avg_val_loss) if avg_val_loss < 20 else float("inf")
+        return avg_val_loss, val_perplexity
 
     def generate(
         self,
