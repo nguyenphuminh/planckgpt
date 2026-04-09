@@ -80,7 +80,7 @@ These are things I might implement in the future:
 
 * Training improvements:
   * Switch dataset to Climbmix which is better than Fineweb-edu.
-  * Try Gram Newton-Schultz to improve Muon's speed.
+  * Try Gram Newton-Schulz to improve Muon's speed.
   * Set different LRs for parameters using Adam.
   * Add weight decay and dropout.
   * Add LR warmup.
@@ -92,7 +92,9 @@ These are things I might implement in the future:
   * Smear.
   * Backout.
   * Dynamic scales for some layers.
+  * Mamba? RWKV?
 * Finetuning for different purposes.
+* Try playing with different datasets for both pretraining and finetuning.
 * Code refactoring.
 
 ## Acknowledgements
