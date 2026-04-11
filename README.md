@@ -80,21 +80,24 @@ These are things I might implement in the future:
 
 * Training improvements:
   * Switch dataset to Climbmix which is better than Fineweb-edu.
-  * Try Gram Newton-Schulz to improve Muon's speed.
   * Set different LRs for parameters using Adam.
   * Add weight decay and dropout.
   * Add LR warmup.
+  * Try Gram Newton-Schulz to improve Muon's speed.
   * Support FP8 and potentially NVFP4 training.
 * Architecture improvements:
   * Custom tokenizer.
-  * Sliding window attention.
   * Value embeddings.
+  * Dynamic scales for some layers.
+  * Mamba? RWKV? MoE?
+  * Sliding window attention.
   * Smear.
   * Backout.
-  * Dynamic scales for some layers.
-  * Mamba? RWKV?
-* Finetuning for different purposes.
-* Try playing with different datasets for both pretraining and finetuning.
+* Potential issues to look after:
+  * Embedding might be unstable currently due to AdamW8bit.
+* Finetuning for multiple purposes.
+* Try different datasets for both pretraining and finetuning.
+* Export to multiple formats for inference.
 * Code refactoring.
 
 ## Acknowledgements
