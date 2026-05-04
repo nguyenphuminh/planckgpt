@@ -154,9 +154,6 @@ class ChatBot(nn.Module):
         self.kv_caches = []
         self.use_kv_cache = False
 
-        # Convert to full bfloat16
-        self.bfloat16()
-
     def init_weights(self):
         """
         Initialize weights following nanochat approach:
@@ -243,7 +240,10 @@ class ChatBot(nn.Module):
                 embedding, new_kv_cache = layer(embedding, cos, sin, layer_cache)
                 new_kv_caches.append(new_kv_cache)
             else:
-                embedding, _ = checkpoint(layer, embedding, cos, sin, None, use_reentrant=False)
+                if i % 3 == 0:
+                    embedding, _ = checkpoint(layer, embedding, cos, sin, None, use_reentrant=False)
+                else:
+                    embedding, _ = layer(embedding, cos, sin, None)
 
         # Update cache list
         self.kv_caches = new_kv_caches
@@ -266,8 +266,8 @@ class ChatBot(nn.Module):
         val_data_loader=None,
         num_segments=20,
         sequence_length=1024,
-        batch_size=8,
-        gradient_accumulation_steps=64,
+        batch_size=4,
+        gradient_accumulation_steps=128,
         adam_lr=0.008,
         adam_betas=(0.8, 0.95),
         muon_lr=0.02,
@@ -360,11 +360,12 @@ class ChatBot(nn.Module):
                 target_tokens = batch_sequences[:, 1:]
 
                 # Enable mixed precision
-                output = self.forward(input_tokens)  # [batch_size, seq_len-1, vocab_size]
-                output = output.reshape(-1, self.vocab_size)  # [batch_size * seq_len-1, vocab_size]
-                target_tokens = target_tokens.reshape(-1)  # [batch_size * seq_len-1]
-                loss = criterion(output, target_tokens)
-                loss = loss / gradient_accumulation_steps
+                with autocast(device_type=self.device.type, dtype=torch.bfloat16):
+                    output = self.forward(input_tokens)  # [batch_size, seq_len-1, vocab_size]
+                    output = output.reshape(-1, self.vocab_size)  # [batch_size * seq_len-1, vocab_size]
+                    target_tokens = target_tokens.reshape(-1)  # [batch_size * seq_len-1]
+                    loss = criterion(output, target_tokens)
+                    loss = loss / gradient_accumulation_steps
 
                 # Propagate grad
                 loss.backward()
@@ -402,7 +403,7 @@ class ChatBot(nn.Module):
             self.save()
             print(f"Segment {segment_index + 1}: Saved to chatbot.pth")
 
-    def evaluate(self, val_data_loader, sequence_length=1024, batch_size=8):
+    def evaluate(self, val_data_loader, sequence_length=1024, batch_size=4):
         """Validation loop, returns avg loss and perplexity"""
         self.eval()
         val_loss = 0
