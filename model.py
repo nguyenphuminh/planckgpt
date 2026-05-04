@@ -154,6 +154,9 @@ class ChatBot(nn.Module):
         self.kv_caches = []
         self.use_kv_cache = False
 
+        # Convert to full bfloat16
+        self.bfloat16()
+
     def init_weights(self):
         """
         Initialize weights following nanochat approach:
@@ -240,10 +243,7 @@ class ChatBot(nn.Module):
                 embedding, new_kv_cache = layer(embedding, cos, sin, layer_cache)
                 new_kv_caches.append(new_kv_cache)
             else:
-                if i % 3 == 0:
-                    embedding, _ = checkpoint(layer, embedding, cos, sin, None, use_reentrant=False)
-                else:
-                    embedding, _ = layer(embedding, cos, sin, None)
+                embedding, _ = checkpoint(layer, embedding, cos, sin, None, use_reentrant=False)
 
         # Update cache list
         self.kv_caches = new_kv_caches
@@ -266,8 +266,8 @@ class ChatBot(nn.Module):
         val_data_loader=None,
         num_segments=20,
         sequence_length=1024,
-        batch_size=4,
-        gradient_accumulation_steps=128,
+        batch_size=8,
+        gradient_accumulation_steps=64,
         adam_lr=0.008,
         adam_betas=(0.8, 0.95),
         muon_lr=0.02,
@@ -360,12 +360,11 @@ class ChatBot(nn.Module):
                 target_tokens = batch_sequences[:, 1:]
 
                 # Enable mixed precision
-                with autocast(device_type=self.device.type, dtype=torch.bfloat16):
-                    output = self.forward(input_tokens)  # [batch_size, seq_len-1, vocab_size]
-                    output = output.reshape(-1, self.vocab_size)  # [batch_size * seq_len-1, vocab_size]
-                    target_tokens = target_tokens.reshape(-1)  # [batch_size * seq_len-1]
-                    loss = criterion(output, target_tokens)
-                    loss = loss / gradient_accumulation_steps
+                output = self.forward(input_tokens)  # [batch_size, seq_len-1, vocab_size]
+                output = output.reshape(-1, self.vocab_size)  # [batch_size * seq_len-1, vocab_size]
+                target_tokens = target_tokens.reshape(-1)  # [batch_size * seq_len-1]
+                loss = criterion(output, target_tokens)
+                loss = loss / gradient_accumulation_steps
 
                 # Propagate grad
                 loss.backward()
@@ -403,7 +402,7 @@ class ChatBot(nn.Module):
             self.save()
             print(f"Segment {segment_index + 1}: Saved to chatbot.pth")
 
-    def evaluate(self, val_data_loader, sequence_length=1024, batch_size=4):
+    def evaluate(self, val_data_loader, sequence_length=1024, batch_size=8):
         """Validation loop, returns avg loss and perplexity"""
         self.eval()
         val_loss = 0
@@ -451,8 +450,10 @@ class ChatBot(nn.Module):
         prompt,
         context_window=1024,
         max_length=4096,
-        temperature=0.8,
-        topk=50
+        temperature=1.0,
+        topk=50,
+        topp=0.95,
+        repetition_penalty=1.1
     ):
         """Text generation function"""
 
@@ -485,8 +486,26 @@ class ChatBot(nn.Module):
                 # Apply temperature scaling
                 scaled_logits = logits / temperature
 
-                # Top-k scaling
+                # Penalize tokens that already appear in context
+                if repetition_penalty != 1.0:
+                    for token_id in set(current_tokens):
+                        if scaled_logits[token_id] < 0:
+                            scaled_logits[token_id] *= repetition_penalty
+                        else:
+                            scaled_logits[token_id] /= repetition_penalty
+
+                # Top-k filtering
                 top_k_values, top_k_indices = torch.topk(scaled_logits, k=topk)
+
+                # Top-p filtering within top-k candidates
+                if topp < 1.0:
+                    top_k_probs = torch.softmax(top_k_values, dim=0)
+                    cumulative_probs = torch.cumsum(top_k_probs, dim=0)
+                    # Remove tokens that push cumulative prob over topp
+                    nucleus_mask = cumulative_probs - top_k_probs < topp
+                    top_k_values = top_k_values[nucleus_mask]
+                    top_k_indices = top_k_indices[nucleus_mask]
+
                 top_k_probs = torch.softmax(top_k_values, dim=0)
 
                 # Sample from top-k
