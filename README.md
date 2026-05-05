@@ -69,7 +69,7 @@ and generates text with:
 * Sampling: Top-k sampling (k=50).
 * Temperature: 0.8.
 * Context Window: 1024 tokens.
-* Stopping: EOS token for fixed limit (4096 by default).
+* Stopping: EOS token for fixed limit (1024 by default).
 * KV cache for faster inference.
 
 The current configuration is designed to squeeze out the best possible performance out of an 8gb 5070 Mobile, you can change the configs to match your card.
