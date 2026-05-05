@@ -36,7 +36,7 @@ To pretrain the model from scratch, run:
 python train.py
 ```
 
-The model will train with 3b+ tokens with 20 150m-token segments (estimated 40 hours on my Laptop RTX 5070 Mobile), and after each epoch it will save the current model to `./chatbot.pth`.
+The model will train with ~3b tokens/20 150m-token segments (estimated 40 hours on my Laptop RTX 5070 Mobile), and after each epoch it will save the current model to `./chatbot.pth`.
 
 Of course, for more control, you can check out `model.py`.
 
@@ -66,10 +66,11 @@ and is pretrained with:
 
 and generates text with:
 
-* Sampling: Top-k sampling (k=50).
-* Temperature: 0.8.
+* Top-k sampling (k=50) and top-p sampling (p=0.95) right after.
+* Temperature: 1.0.
 * Context Window: 1024 tokens.
-* Stopping: EOS token for fixed limit (1024 by default).
+* Repetition penalty: 1.1 on full context window.
+* Stopping: EOS token or fixed limit (1024 by default).
 * KV cache for faster inference.
 
 The current configuration is designed to squeeze out the best possible performance out of an 8gb 5070 Mobile, you can change the configs to match your card.
@@ -79,13 +80,16 @@ The current configuration is designed to squeeze out the best possible performan
 These are things I might implement in the future:
 
 * Training improvements:
-  * Switch dataset to Climbmix which is better than Fineweb-edu.
-  * Set different LRs for parameters using Adam.
+  * Try out different pretraining datasets, e.g. ClimbMix.
+  * Set different hyperparameters for different parameters using Adam.
   * Add weight decay and dropout.
   * Add LR warmup.
   * Try Gram Newton-Schulz to improve Muon's speed.
+  * Use up-to-date Flash Attention implementation.
   * Support FP8 and potentially NVFP4 training.
+  * Tune hyperparameters further.
 * Architecture improvements:
+  * Interesting idea to try out: Overwhelmingly large vocab like Gemma-3-270m which might help with small models.
   * Custom tokenizer.
   * Value embeddings.
   * Dynamic scales for some layers.
