@@ -81,9 +81,7 @@ These are things I might implement in the future:
 
 * Training improvements:
   * Try out different pretraining datasets, e.g. ClimbMix.
-  * Set different hyperparameters for different parameters using Adam.
-  * Add weight decay and dropout.
-  * Add LR warmup.
+  * Consider adding LR warmup.
   * Try Gram Newton-Schulz to improve Muon's speed.
   * Use up-to-date Flash Attention implementation.
   * Support FP8 and potentially NVFP4 training.

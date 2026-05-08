@@ -28,7 +28,7 @@ def load_data(
         for sample in miniset:
             text = sample.get("text", "")
             if text:
-                text_parts.append(f"{text}<|endoftext|>\n\n")
+                text_parts.append(f"{text}<|endoftext|>")
 
         combined_text = "".join(text_parts)
         
@@ -62,7 +62,7 @@ def load_val_data(
         for sample in miniset:
             text = sample.get("text", "")
             if text:
-                text_parts.append(f"{text}<|endoftext|>\n\n")
+                text_parts.append(f"{text}<|endoftext|>")
 
         combined_text = "".join(text_parts)
         
