@@ -1,5 +1,3 @@
-"""Effectively NorMuon from modded-nanogpt but with a more Pytorch optimizer ish interface"""
-
 import torch
 from torch.optim.optimizer import Optimizer
 
@@ -31,7 +29,7 @@ class Muon(Optimizer):
         lr: float = 0.02,
         momentum: float = 0.95,
         weight_decay: float = 0.0,
-        beta2: float = 0.95,
+        beta2: float = 0.9,
         ns_steps: int = 5,
     ):
         if not 0.0 <= lr:
@@ -138,7 +136,7 @@ class Muon(Optimizer):
     ) -> torch.Tensor:
         """
         Orthogonalize gradient via Polar Express iteration.
-        Computes Q from the polar decomposition G = Q·P.
+        Computes Q from the polar decomposition G = Q @ P.
         """
         # Convert to bfloat16 for speed, normalize
         X = g.bfloat16()

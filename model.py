@@ -7,7 +7,7 @@ from torch.optim.lr_scheduler import LinearLR
 from torch.utils.checkpoint import checkpoint
 from torch.amp import autocast
 from muon import Muon
-from bitsandbytes.optim import Adam8bit
+from bitsandbytes.optim import AdamW8bit
 import numpy as np
 
 def rms_norm(x):
@@ -262,18 +262,23 @@ class ChatBot(nn.Module):
 
     def train_model(
         self,
+        # Data loaders
         data_loader,
         val_data_loader=None,
         num_segments=20,
+        # Training config
         sequence_length=1024,
         batch_size=4,
         gradient_accumulation_steps=128,
-        adam_lr=0.008,
-        adam_betas=(0.8, 0.95),
-        muon_lr=0.02,
-        stable_range=0.55,
+        # Hyperparams config
+        adam_params=None,
+        muon_params=None,
+        # Decay config
+        stable_range=0.65,
         total_steps=5722,
-        max_decay=0.1
+        max_decay=0.05,
+        # Checkpointing
+        checkpoint_dir="checkpoints",
     ):
         """Training loop"""
 
@@ -291,24 +296,53 @@ class ChatBot(nn.Module):
         cooldown_steps = int((1 - stable_range) * total_steps)
 
         # AdamW for embedding/linear weights
-        linear_params = [self.embedding.weight, self.output.weight]
-        adam_opt = Adam8bit(linear_params, lr=adam_lr, betas=adam_betas)
+        if not adam_params:
+            adam_params = [
+                { "params": [self.output.weight], "lr": 0.004, "betas": (0.8, 0.96), "eps": 1e-10, "weight_decay": 0.01 },
+                { "params": [self.embedding.weight], "lr": 0.2, "betas": (0.8, 0.995), "eps": 1e-10, "weight_decay": 0.001 }
+            ]
+        adam_opt = AdamW8bit(adam_params)
         adam_cooldown_scheduler = LinearLR(adam_opt, start_factor=1.0, end_factor=max_decay, total_iters=cooldown_steps)
 
         # Muon for transformer params
-        transformer_params = [p for n, p in self.named_parameters() if "embedding" not in n and "output" not in n]
-        shape_groups = {}
-        for p in transformer_params:
-            shape_groups.setdefault(p.shape, []).append(p)
-        muon_param_groups = [
-            {"params": ps, "lr": muon_lr * max(1.0, shape[-2] / shape[-1]) ** 0.5}
-            for shape, ps in shape_groups.items()
-        ]
-        muon_opt = Muon(muon_param_groups)
+        if not muon_params:
+            muon_params = [p for n, p in self.named_parameters() if "embedding" not in n and "output" not in n]
+            shape_groups = {}
+            for p in muon_params:
+                shape_groups.setdefault(p.shape, []).append(p)
+            muon_params = [
+                {"params": ps, "lr": 0.02 * max(1.0, shape[-2] / shape[-1]) ** 0.5}
+                for shape, ps in shape_groups.items()
+            ]
+        muon_opt = Muon(muon_params)
         muon_cooldown_scheduler = LinearLR(muon_opt, start_factor=1.0, end_factor=max_decay, total_iters=cooldown_steps)
 
         # Track optimizer step for Muon momentum update
         optimizer_step = 0
+
+        # Resume from latest checkpoint if one exists
+        resume_segment = 0
+        if checkpoint_dir:
+            import os, glob
+            os.makedirs(checkpoint_dir, exist_ok=True)
+            ckpts = sorted(glob.glob(os.path.join(checkpoint_dir, "checkpoint_seg*.pt")))
+            if ckpts:
+                latest = ckpts[-1]
+                print(f"Resuming from checkpoint: {latest}")
+                ckpt = torch.load(latest, map_location=self.device)
+                self.load_state_dict(ckpt["model_state_dict"])
+                adam_opt.load_state_dict(ckpt["adam_opt_state_dict"])
+                muon_opt.load_state_dict(ckpt["muon_opt_state_dict"])
+                adam_cooldown_scheduler.load_state_dict(ckpt["adam_scheduler_state_dict"])
+                muon_cooldown_scheduler.load_state_dict(ckpt["muon_scheduler_state_dict"])
+                optimizer_step = ckpt["optimizer_step"]
+                resume_segment = ckpt["segment_index"] + 1
+
+                # Deallocate redundant mem
+                del ckpt
+                torch.cuda.empty_cache()
+                
+                print(f"Resumed at segment {resume_segment}, optimizer_step={optimizer_step}")
 
         def opt_step():
             # Gradient clipping
@@ -328,10 +362,14 @@ class ChatBot(nn.Module):
                 muon_cooldown_scheduler.step()
 
         for segment_index, segment in enumerate(data_loader):
+            # Skip already-completed segments when resuming
+            if segment_index < resume_segment:
+                print(f"Skipping segment {segment_index + 1} (already checkpointed)")
+                continue
+
             # Encode segment to tokens
             tokens = np.array(self.text_to_tokens(segment))
             print(f"Segment {segment_index + 1}: {len(segment)} chars -> {len(tokens)} tokens")
-            
             # Truncate to fit exact number of sequences
             num_sequences = len(tokens) // sequence_length
             truncated = tokens[:num_sequences * sequence_length]
@@ -384,7 +422,8 @@ class ChatBot(nn.Module):
 
             # Get log info
             avg_loss = total_loss / num_batches if num_batches > 0 else 0
-            adamw_current_lr = adam_opt.param_groups[0]["lr"]
+            output_lr = adam_opt.param_groups[0]["lr"]
+            embedding_lr = adam_opt.param_groups[1]["lr"]
             muon_current_lr = muon_opt.param_groups[0]["lr"]
 
             # Validation if val_data_loader provided
@@ -393,15 +432,32 @@ class ChatBot(nn.Module):
                 avg_val_loss, val_perplexity = self.evaluate(val_data_loader, sequence_length, batch_size)
                 val_info = f", Val Loss: {avg_val_loss:.4f}, Val Perplexity: {val_perplexity:.2f}"
 
-            # Log and save
+            # Log and save model
             print(
                 f"Segment {segment_index + 1}: "
                 f"Loss: {avg_loss:.4f}{val_info}, "
-                f"AdamW LR: {adamw_current_lr:.6f}, "
-                f"Muon LR: {muon_current_lr:.6f}, Batches: {num_batches}"
+                f"Embedding LR: {embedding_lr:.6f}, "
+                f"Output LR: {output_lr:.6f}, "
+                f"Matrix LR: {muon_current_lr:.6f}, "
+                f"Batches: {num_batches}"
             )
             self.save()
             print(f"Segment {segment_index + 1}: Saved to chatbot.pth")
+
+            # Save training checkpoint
+            if checkpoint_dir:
+                import os
+                ckpt_path = os.path.join(checkpoint_dir, f"checkpoint_seg{segment_index:04d}.pt")
+                torch.save({
+                    "segment_index": segment_index,
+                    "optimizer_step": optimizer_step,
+                    "model_state_dict": self.state_dict(),
+                    "adam_opt_state_dict": adam_opt.state_dict(),
+                    "muon_opt_state_dict": muon_opt.state_dict(),
+                    "adam_scheduler_state_dict": adam_cooldown_scheduler.state_dict(),
+                    "muon_scheduler_state_dict": muon_cooldown_scheduler.state_dict(),
+                }, ckpt_path)
+                print(f"Segment {segment_index + 1}: Checkpoint saved to {ckpt_path}")
 
     def evaluate(self, val_data_loader, sequence_length=1024, batch_size=4):
         """Validation loop, returns avg loss and perplexity"""
@@ -558,6 +614,8 @@ class ChatBot(nn.Module):
         """Utility to load saved model"""
         checkpoint = torch.load(path, map_location=self.device)
         self.load_state_dict(checkpoint["model_state_dict"])
+        del checkpoint
+        torch.cuda.empty_cache()
 
     def text_to_tokens(self, text):
         """Utility to convert text string to list of tokens"""
