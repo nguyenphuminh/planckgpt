@@ -26,9 +26,9 @@ class Muon(Optimizer):
     def __init__(
         self,
         params,
-        lr: float = 0.02,
+        lr: float = 0.3,
         momentum: float = 0.95,
-        weight_decay: float = 0.0,
+        weight_decay: float = 0.2,
         beta2: float = 0.9,
         ns_steps: int = 5,
     ):

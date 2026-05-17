@@ -1,6 +1,6 @@
 # PlanckGPT
 
-PlanckGPT (planck length reference :D) is my attempt to make a tiny language model from scratch mostly for fun and educational purposes, but also to see how far a consumer-level computer can go in AI development **from scratch**. It has about 150m parameters and is pretrained on roughly 3 billion tokens of the Fineweb-edu dataset. This is small compared to modern LLMs' standards, and it only does next token prediction, but you can definitely train this on a mid-range card for just 1-2 days. Its performance should match that of a GPT2-small, with ~3.1 val loss on Fineweb-edu.
+PlanckGPT (planck length reference :D) is my attempt to make a tiny language model from scratch mostly for fun and educational purposes, but also to see how far a consumer-level computer can go in AI development **from scratch**. It has about 206m parameters and is pretrained on roughly 2 billion tokens of the Fineweb-edu dataset. This is small compared to modern LLMs' standards, and it only does next token prediction, but you can definitely train this on a mid-range card for just 1-2 days. Its performance should match that of a GPT2-small, with ~3.08 val loss on Fineweb-edu.
 
 ## Setup
 
@@ -21,7 +21,7 @@ Of course, you should already install compatible CUDA and Python versions, I cur
 
 ## Running PlanckGPT
 
-1. Download the latest model (`chatbot.pth`) in the releases page.
+1. Download the latest model (`planckgpt.pth`) in the releases page.
 2. Simply run:
 ```sh
 python inference.py
@@ -36,7 +36,7 @@ To pretrain the model from scratch, run:
 python train.py
 ```
 
-The model will train with ~3b tokens/20 150m-token segments (estimated 40 hours on my Laptop RTX 5070 Mobile), and after each epoch it will save the current model to `./chatbot.pth`.
+The model will train with ~2b tokens/20 100m-token segments (estimated 40 hours on my Laptop RTX 5070 Mobile), and after each epoch it will save the current model to `./planckgpt.pth`.
 
 Of course, for more control, you can check out `model.py`.
 
@@ -45,24 +45,25 @@ Of course, for more control, you can check out `model.py`.
 Currently it uses:
 
 * Tokenizer: Tiktoken with GPT-2 encoding (50,257 vocab size).
-* Embedding: 768-dimensional token embedding.
+* Embedding: 896-dimensional token embedding.
 * Rotary positional embedding.
-* Transformer: 12 decoder layers, 6 query heads, 3072 ffn dim, 768 embedding dim.
+* Transformer: 14 decoder layers, 7 query heads, 3584 ffn dim, 896 embedding dim.
 * Multi-Query Attention.
 * Squared ReLU for activation.
-* RMSNorm without learnable params, notably used on QK, embedding, and output logits.
+* RMSNorm without learnable params, notably used on QK, transformer (how you would expect), embedding, and output logits.
 * Output: Linear projection with softcap logits (-15, 15).
 
 and is pretrained with:
 
-* Dataset: Fineweb-edu (~3b tokens).
+* Dataset: Fineweb-edu (~2b tokens).
 * Context Window: 1024 tokens.
 * Batch Size: 4 (effective batch size: 512 with gradient accumulation).
 * NorMuon optimizer for transformer weights, 8-bit Adam optimizer for embedding and output projection.
-* Stable LR for the first 55% of the steps, LinearLR decay to 10% of base LR for the rest.
+* Stable LR for the first 65% of the steps (40 first steps have warmup), LinearLR decay to 5% of base LR for the rest.
+* Cautious weight decay inspired by nanochat.
 * BF16 mixed precision training and other Blackwell-specific features.
 * Training with torch.compile on "max-autotune" mode and `dynamic=False`.
-* Gradient checkpointing in 1/3 of the transformer layers.
+* Gradient checkpointing.
 
 and generates text with:
 
@@ -96,7 +97,9 @@ These are things I might implement in the future:
   * Smear.
   * Backout.
 * Potential issues to look after:
-  * The current setup uses 20:1 data to params ratio, which is not optimal for Muon, which works better with 10:1 ratio.
+  * The current data to params ratio still needs more tuning.
+  * Current stable range might be too high.
+  * Some data segments might be noisy.
   * Embedding might be unstable currently due to AdamW8bit.
 * Finetuning for multiple purposes.
 * Try different datasets for both pretraining and finetuning.
