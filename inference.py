@@ -13,7 +13,7 @@ if __name__ == "__main__":
 
     # Load model
     gpt.load()
-    print("Loaded from gpt.pth\n")
+    print("Loaded from planckgpt.pth\n")
 
     # Prompt
     while True:

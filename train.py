@@ -19,5 +19,5 @@ if __name__ == "__main__":
     )
     
     # Final save
-    print("Final save to gpt.pth")
+    print("Final save to planckgpt.pth")
     gpt.save()
