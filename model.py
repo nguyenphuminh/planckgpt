@@ -510,7 +510,7 @@ class ChatBot(nn.Module):
         temperature=1.0,
         topk=50,
         topp=0.95,
-        repetition_penalty=1.1
+        repetition_penalty=1.2
     ):
         """Text generation function"""
 

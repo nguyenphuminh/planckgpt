@@ -69,7 +69,7 @@ and generates text with:
 * Top-k sampling (k=50) and top-p sampling (p=0.95) right after.
 * Temperature: 1.0.
 * Context Window: 1024 tokens.
-* Repetition penalty: 1.1 on full context window.
+* Repetition penalty: 1.2 on full context window.
 * Stopping: EOS token or fixed limit (1024 by default).
 * KV cache for faster inference.
 
@@ -96,7 +96,7 @@ These are things I might implement in the future:
   * Smear.
   * Backout.
 * Potential issues to look after:
-  * The current setup uses 20:1 data to params ratio, which is not optimal for Muon, which is closer to 10:1.
+  * The current setup uses 20:1 data to params ratio, which is not optimal for Muon, which works better with 10:1 ratio.
   * Embedding might be unstable currently due to AdamW8bit.
 * Finetuning for multiple purposes.
 * Try different datasets for both pretraining and finetuning.
