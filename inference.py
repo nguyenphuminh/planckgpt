@@ -1,24 +1,24 @@
 import torch
-from model import ChatBot
+from model import GPT
 
 if __name__ == "__main__":
     torch.cuda.empty_cache()
 
     # Initialize model
-    chatbot = ChatBot()
-    chatbot = torch.compile(chatbot, mode="reduce-overhead")
+    gpt = GPT()
+    gpt = torch.compile(gpt, mode="reduce-overhead")
 
-    print(f"Using device: {chatbot.device}")
-    print(f"Model parameters: {sum(p.numel() for p in chatbot.parameters()):,}")
+    print(f"Using device: {gpt.device}")
+    print(f"Model parameters: {sum(p.numel() for p in gpt.parameters()):,}")
 
     # Load model
-    chatbot.load()
-    print("Loaded from chatbot.pth\n")
+    gpt.load()
+    print("Loaded from gpt.pth\n")
 
     # Prompt
     while True:
         prompt = input("Prompt: ")
-        stream = chatbot.generate(prompt)
+        stream = gpt.generate(prompt)
 
         try:
             while True:

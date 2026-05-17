@@ -1,20 +1,20 @@
 import torch
-from model import ChatBot
+from model import GPT
 from data import load_data, load_val_data
 
 if __name__ == "__main__":
     torch.cuda.empty_cache()
 
     # Initialize model
-    chatbot = ChatBot()
-    chatbot.load()
-    chatbot = torch.compile(chatbot, mode="max-autotune", dynamic=False)
+    gpt = GPT()
+    gpt.load()
+    gpt = torch.compile(gpt, mode="max-autotune", dynamic=False)
 
-    print(f"Using device: {chatbot.device}")
-    print(f"Model parameters: {sum(p.numel() for p in chatbot.parameters()):,}")
+    print(f"Using device: {gpt.device}")
+    print(f"Model parameters: {sum(p.numel() for p in gpt.parameters()):,}")
 
     # Pretrain
-    avg_val_loss, val_perplexity = chatbot.evaluate(
+    avg_val_loss, val_perplexity = gpt.evaluate(
         load_val_data()
     )
 

@@ -3,7 +3,6 @@ import tiktoken
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.optim.lr_scheduler import LinearLR
 from torch.utils.checkpoint import checkpoint
 from torch.amp import autocast
 from muon import Muon
@@ -103,8 +102,8 @@ class Transformer(nn.Module):
         x = x + self.ffn2(F.relu(self.ffn1(rms_norm(x))).square())
         return x, new_kv_cache
 
-class ChatBot(nn.Module):
-    """ChatBot class containing the model, training loop, and other utilities"""
+class GPT(nn.Module):
+    """GPT class containing the model, training loop, and other utilities"""
     def __init__(self, options={}):
         super().__init__()
 
@@ -114,9 +113,9 @@ class ChatBot(nn.Module):
         self.eos_token_id = self.encoding.encode("<|endoftext|>", allowed_special={"<|endoftext|>"})[0]
 
         # Config
-        self.d_model = options.get("d_model", 768)
-        self.num_layers = options.get("num_layers", 12)
-        self.num_heads = options.get("num_heads", 6)
+        self.d_model = options.get("d_model", 896)
+        self.num_layers = options.get("num_layers", 14)
+        self.num_heads = options.get("num_heads", 7)
         self.rotary_seq_len = options.get("rotary_seq_len", 1024)
 
         # Embedding
@@ -240,10 +239,7 @@ class ChatBot(nn.Module):
                 embedding, new_kv_cache = layer(embedding, cos, sin, layer_cache)
                 new_kv_caches.append(new_kv_cache)
             else:
-                if i % 3 == 0:
-                    embedding, _ = checkpoint(layer, embedding, cos, sin, None, use_reentrant=False)
-                else:
-                    embedding, _ = layer(embedding, cos, sin, None)
+                embedding, _ = checkpoint(layer, embedding, cos, sin, None, use_reentrant=False)
 
         # Update cache list
         self.kv_caches = new_kv_caches
@@ -275,7 +271,8 @@ class ChatBot(nn.Module):
         muon_params=None,
         # Decay config
         stable_range=0.65,
-        total_steps=5722,
+        total_steps=3815,
+        warmup_steps=40,
         max_decay=0.05,
         # Checkpointing
         checkpoint_dir="checkpoints",
@@ -291,18 +288,20 @@ class ChatBot(nn.Module):
         # Loss
         criterion = nn.CrossEntropyLoss()
 
-        # (45%) cooldown to min (0.1x)
-        stable_steps = int(stable_range * total_steps)
-        cooldown_steps = int((1 - stable_range) * total_steps)
+        # Scale for different d_model
+        scale = 1 / (self.d_model / 768) ** 0.5
+
+        # Warmup steps and base weight decay to prepare for warmdown
+        base_wd = 0.2 * scale
 
         # AdamW for embedding/linear weights
         if not adam_params:
             adam_params = [
-                { "params": [self.output.weight], "lr": 0.004, "betas": (0.8, 0.96), "eps": 1e-10, "weight_decay": 0.01 },
-                { "params": [self.embedding.weight], "lr": 0.2, "betas": (0.8, 0.995), "eps": 1e-10, "weight_decay": 0.001 }
+                { "params": [self.output.weight], "lr": 0.008 * scale, "betas": (0.8, 0.96), "eps": 1e-10, "weight_decay": 0.01 },
+                { "params": [self.embedding.weight], "lr": 0.3 * scale, "betas": (0.8, 0.995), "eps": 1e-10, "weight_decay": 0.001 }
             ]
         adam_opt = AdamW8bit(adam_params)
-        adam_cooldown_scheduler = LinearLR(adam_opt, start_factor=1.0, end_factor=max_decay, total_iters=cooldown_steps)
+        adam_initial_lrs = [group["lr"] for group in adam_opt.param_groups]
 
         # Muon for transformer params
         if not muon_params:
@@ -311,11 +310,11 @@ class ChatBot(nn.Module):
             for p in muon_params:
                 shape_groups.setdefault(p.shape, []).append(p)
             muon_params = [
-                {"params": ps, "lr": 0.02 * max(1.0, shape[-2] / shape[-1]) ** 0.5}
+                {"params": ps, "lr": 0.02 * max(1.0, shape[-2] / shape[-1]) ** 0.5, "weight_decay": 0.2 * scale}
                 for shape, ps in shape_groups.items()
             ]
         muon_opt = Muon(muon_params)
-        muon_cooldown_scheduler = LinearLR(muon_opt, start_factor=1.0, end_factor=max_decay, total_iters=cooldown_steps)
+        muon_initial_lrs = [group["lr"] for group in muon_opt.param_groups]
 
         # Track optimizer step for Muon momentum update
         optimizer_step = 0
@@ -333,8 +332,6 @@ class ChatBot(nn.Module):
                 self.load_state_dict(ckpt["model_state_dict"])
                 adam_opt.load_state_dict(ckpt["adam_opt_state_dict"])
                 muon_opt.load_state_dict(ckpt["muon_opt_state_dict"])
-                adam_cooldown_scheduler.load_state_dict(ckpt["adam_scheduler_state_dict"])
-                muon_cooldown_scheduler.load_state_dict(ckpt["muon_scheduler_state_dict"])
                 optimizer_step = ckpt["optimizer_step"]
                 resume_segment = ckpt["segment_index"] + 1
 
@@ -343,23 +340,38 @@ class ChatBot(nn.Module):
                 torch.cuda.empty_cache()
                 
                 print(f"Resumed at segment {resume_segment}, optimizer_step={optimizer_step}")
+        
+        def get_lr_multiplier(step):
+            warmdown_steps = int((1 - stable_range) * total_steps)
+            if step < warmup_steps:
+                return (step + 1) / warmup_steps
+            elif step <= total_steps - warmdown_steps:
+                return 1.0
+            else:
+                progress = (total_steps - step) / warmdown_steps
+                return progress * 1.0 + (1 - progress) * max_decay
 
         def opt_step():
             # Gradient clipping
             torch.nn.utils.clip_grad_norm_(self.parameters(), 1.0)
 
-            # AdamW step
+            # LR schedule
+            lrm = get_lr_multiplier(optimizer_step)
+            for i, group in enumerate(adam_opt.param_groups):
+                group["lr"] = adam_initial_lrs[i] * lrm
+            for i, group in enumerate(muon_opt.param_groups):
+                group["lr"] = muon_initial_lrs[i] * lrm
+
+            # Weight decay cosine schedule to zero
+            wd = base_wd * 0.5 * (1 + math.cos(math.pi * optimizer_step / total_steps))
+            for group in muon_opt.param_groups:
+                group["weight_decay"] = wd
+
+            # Step both optimizers
             adam_opt.step()
             adam_opt.zero_grad(set_to_none=True)
-
-            # Muon step
             muon_opt.step()
             muon_opt.zero_grad(set_to_none=True)
-
-            # LR scheduler steps
-            if optimizer_step > stable_steps:
-                adam_cooldown_scheduler.step()
-                muon_cooldown_scheduler.step()
 
         for segment_index, segment in enumerate(data_loader):
             # Skip already-completed segments when resuming
@@ -442,7 +454,7 @@ class ChatBot(nn.Module):
                 f"Batches: {num_batches}"
             )
             self.save()
-            print(f"Segment {segment_index + 1}: Saved to chatbot.pth")
+            print(f"Segment {segment_index + 1}: Saved to planckgpt.pth")
 
             # Save training checkpoint
             if checkpoint_dir:
@@ -454,8 +466,6 @@ class ChatBot(nn.Module):
                     "model_state_dict": self.state_dict(),
                     "adam_opt_state_dict": adam_opt.state_dict(),
                     "muon_opt_state_dict": muon_opt.state_dict(),
-                    "adam_scheduler_state_dict": adam_cooldown_scheduler.state_dict(),
-                    "muon_scheduler_state_dict": muon_cooldown_scheduler.state_dict(),
                 }, ckpt_path)
                 print(f"Segment {segment_index + 1}: Checkpoint saved to {ckpt_path}")
 
@@ -510,7 +520,7 @@ class ChatBot(nn.Module):
         temperature=1.0,
         topk=50,
         topp=0.95,
-        repetition_penalty=1.1
+        repetition_penalty=1.2
     ):
         """Text generation function"""
 
@@ -598,7 +608,7 @@ class ChatBot(nn.Module):
 
         return current_tokens[-context_window:]
 
-    def save(self, path="./chatbot.pth"):
+    def save(self, path="./planckgpt.pth"):
         """Utility to save model"""
         torch.save({
             "model_state_dict": self.state_dict(),
@@ -610,7 +620,7 @@ class ChatBot(nn.Module):
             "eos_token_id": self.eos_token_id
         }, path)
 
-    def load(self, path="./chatbot.pth"):
+    def load(self, path="./planckgpt.pth"):
         """Utility to load saved model"""
         checkpoint = torch.load(path, map_location=self.device)
         self.load_state_dict(checkpoint["model_state_dict"])
