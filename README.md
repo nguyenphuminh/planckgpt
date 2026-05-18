@@ -70,7 +70,7 @@ and generates text with:
 * Top-k sampling (k=50) and top-p sampling (p=0.95) right after.
 * Temperature: 1.0.
 * Context Window: 1024 tokens.
-* Repetition penalty: 1.2 on full context window.
+* Repetition penalty: 1.2 on 64-token window.
 * Stopping: EOS token or fixed limit (1024 by default).
 * KV cache for faster inference.
 

@@ -520,7 +520,8 @@ class GPT(nn.Module):
         temperature=1.0,
         topk=50,
         topp=0.95,
-        repetition_penalty=1.2
+        repetition_penalty=1.2,
+        repetition_window=64
     ):
         """Text generation function"""
 
@@ -553,13 +554,16 @@ class GPT(nn.Module):
                 # Apply temperature scaling
                 scaled_logits = logits / temperature
 
-                # Penalize tokens that already appear in context
+                # Penalize tokens in recent window only
                 if repetition_penalty != 1.0:
-                    for token_id in set(current_tokens):
-                        if scaled_logits[token_id] < 0:
-                            scaled_logits[token_id] *= repetition_penalty
-                        else:
-                            scaled_logits[token_id] /= repetition_penalty
+                    window = current_tokens[-repetition_window:] if repetition_window > 0 else current_tokens
+                    window_ids = torch.tensor(list(set(window)), device=self.device)
+                    window_logits = scaled_logits[window_ids]
+                    scaled_logits[window_ids] = torch.where(
+                        window_logits < 0,
+                        window_logits * repetition_penalty,
+                        window_logits / repetition_penalty
+                    )
 
                 # Top-k filtering
                 top_k_values, top_k_indices = torch.topk(scaled_logits, k=topk)
