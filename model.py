@@ -441,8 +441,8 @@ class GPT(nn.Module):
             # Validation if val_data_loader provided
             val_info = ""
             if val_data_loader is not None:
-                avg_val_loss, val_perplexity = self.evaluate(val_data_loader, sequence_length, batch_size)
-                val_info = f", Val Loss: {avg_val_loss:.4f}, Val Perplexity: {val_perplexity:.2f}"
+                avg_val_loss, val_perplexity, val_bpb = self.evaluate(val_data_loader, sequence_length, batch_size)
+                val_info = f", Val Loss: {avg_val_loss:.4f}, Val BPB: {val_bpb:.4f}, Val Perplexity: {val_perplexity:.2f}"
 
             # Log and save model
             print(
@@ -470,13 +470,19 @@ class GPT(nn.Module):
                 print(f"Segment {segment_index + 1}: Checkpoint saved to {ckpt_path}")
 
     def evaluate(self, val_data_loader, sequence_length=1024, batch_size=4):
-        """Validation loop, returns avg loss and perplexity"""
+        """Validation loop, returns avg loss, perplexity, and bits-per-byte"""
         self.eval()
         val_loss = 0
         val_tokens = 0
+        val_bytes = 0
 
         # Loss
         criterion = nn.CrossEntropyLoss()
+
+        # Build token->bytes lookup for BPB
+        token_bytes = torch.zeros(self.vocab_size, dtype=torch.int64, device=self.device)
+        for token_id in range(self.vocab_size):
+            token_bytes[token_id] = len(self.encoding.decode([token_id]).encode("utf-8"))
 
         with torch.no_grad():
             for val_segment in val_data_loader:
@@ -507,10 +513,13 @@ class GPT(nn.Module):
 
                     val_loss += loss.item() * target_tokens.size(0)
                     val_tokens += target_tokens.size(0)
+                    val_bytes += token_bytes[target_tokens].sum().item()
 
         avg_val_loss = val_loss / val_tokens if val_tokens > 0 else 0
         val_perplexity = math.exp(avg_val_loss) if avg_val_loss < 20 else float("inf")
-        return avg_val_loss, val_perplexity
+        avg_bytes_per_token = val_bytes / val_tokens if val_tokens > 0 else 1
+        bpb = avg_val_loss * math.log2(math.e) / avg_bytes_per_token
+        return avg_val_loss, val_perplexity, bpb
 
     def generate(
         self,
@@ -627,7 +636,7 @@ class GPT(nn.Module):
     def load(self, path="./planckgpt.pth"):
         """Utility to load saved model"""
         checkpoint = torch.load(path, map_location=self.device)
-        self.load_state_dict(checkpoint["model_state_dict"])
+        self.load_state_dict(checkpoint["model_state_dict"], strict=False)
         del checkpoint
         torch.cuda.empty_cache()
 
