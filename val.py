@@ -14,8 +14,8 @@ if __name__ == "__main__":
     print(f"Model parameters: {sum(p.numel() for p in gpt.parameters()):,}")
 
     # Pretrain
-    avg_val_loss, val_perplexity = gpt.evaluate(
+    avg_val_loss, val_perplexity, val_bpb = gpt.evaluate(
         load_val_data()
     )
 
-    print(f", Val Loss: {avg_val_loss:.4f}, Val Perplexity: {val_perplexity:.2f}")
+    print(f", Val Loss: {avg_val_loss:.4f}, Val BPB: {val_bpb:.4f}, Val Perplexity: {val_perplexity:.2f}")
