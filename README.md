@@ -1,6 +1,6 @@
 # PlanckGPT
 
-PlanckGPT (planck length reference :D) is my attempt to make a tiny language model from scratch mostly for fun and educational purposes, but also to see how far a consumer-level computer can go in AI development **from scratch**. It has about 206m parameters and is pretrained on roughly 2 billion tokens of the Fineweb-edu dataset. This is small compared to modern LLMs' standards, and it only does next token prediction, but you can definitely train this on a mid-range card for just 1-2 days. Its performance should match that of a GPT2-small, with ~3.08 val loss on Fineweb-edu.
+PlanckGPT (planck length reference :D) is my attempt to make a tiny language model from scratch mostly for fun and educational purposes, but also to see how far a consumer-level computer can go in AI development **from scratch**. It has about 206m parameters and is pretrained on roughly 2 billion tokens of the Fineweb-edu dataset. This is small compared to modern LLMs' standards, and it only does next token prediction, but you can definitely train this on a mid-range card for just 1-2 days. Its performance should match that of a GPT2-small, with ~3.0793 average val loss and ~0.9538 bpb val loss on Fineweb-edu.
 
 ## Setup
 
