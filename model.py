@@ -291,9 +291,6 @@ class GPT(nn.Module):
         # Scale for different d_model
         scale = 1 / (self.d_model / 768) ** 0.5
 
-        # Warmup steps and base weight decay to prepare for warmdown
-        base_wd = 0.2 * scale
-
         # AdamW for embedding/linear weights
         if not adam_params:
             adam_params = [
@@ -305,12 +302,14 @@ class GPT(nn.Module):
 
         # Muon for transformer params
         if not muon_params:
+            base_muon_wd = 0.185
+            
             muon_params = [p for n, p in self.named_parameters() if "embedding" not in n and "output" not in n]
             shape_groups = {}
             for p in muon_params:
                 shape_groups.setdefault(p.shape, []).append(p)
             muon_params = [
-                {"params": ps, "lr": 0.02 * max(1.0, shape[-2] / shape[-1]) ** 0.5, "weight_decay": 0.2 * scale}
+                {"params": ps, "lr": 0.02 * max(1.0, shape[-2] / shape[-1]) ** 0.5, "weight_decay": base_muon_wd}
                 for shape, ps in shape_groups.items()
             ]
         muon_opt = Muon(muon_params)
@@ -363,9 +362,9 @@ class GPT(nn.Module):
                 group["lr"] = muon_initial_lrs[i] * lrm
 
             # Weight decay cosine schedule to zero
-            wd = base_wd * 0.5 * (1 + math.cos(math.pi * optimizer_step / total_steps))
+            muon_wd = base_muon_wd * 0.5 * (1 + math.cos(math.pi * optimizer_step / total_steps))
             for group in muon_opt.param_groups:
-                group["weight_decay"] = wd
+                group["weight_decay"] = muon_wd
 
             # Step both optimizers
             adam_opt.step()

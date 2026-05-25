@@ -13,7 +13,7 @@ if __name__ == "__main__":
     print(f"Using device: {gpt.device}")
     print(f"Model parameters: {sum(p.numel() for p in gpt.parameters()):,}")
 
-    # Pretrain
+    # Evaluate
     avg_val_loss, val_perplexity, val_bpb = gpt.evaluate(
         load_val_data()
     )
