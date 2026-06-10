@@ -122,8 +122,8 @@ PlanckGPT is inspired by [`modded-nanogpt`](https://github.com/KellerJordan/modd
 }
 ```
 
-## Copyrights and License
+## Copyright and License
 
-Copyrights © 2025 Nguyen Phu Minh.
+Copyright © 2025 Nguyen Phu Minh.
 
 This project is licensed under the Apache 2.0 License.
