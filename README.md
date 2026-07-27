@@ -21,10 +21,10 @@ Of course, you should already install compatible CUDA and Python versions, I cur
 
 ## Running PlanckGPT
 
-1. Download the latest model (`planckgpt.pth`) in the releases page.
+1. Download the latest model (`planckgpt.pth`) in the releases page and place it in `./artifacts/`.
 2. Simply run:
 ```sh
-python inference.py
+python -m scripts.inference
 ```
 
 A prompt will appear for you to chat with the model.
@@ -33,12 +33,17 @@ A prompt will appear for you to chat with the model.
 
 To pretrain the model from scratch, run:
 ```sh
-python train.py
+python -m scripts.pretrain
 ```
 
-The model will train with ~2b tokens/20 100m-token segments (estimated 40 hours on my Laptop RTX 5070 Mobile), and after each epoch it will save the current model to `./planckgpt.pth`.
+The model will train with ~2b tokens/20 100m-token segments (estimated 28 hours on my Laptop RTX 5070 Mobile), and after each epoch it will save the current model to `./artifacts/planckgpt.pth` and a checkpoint containing the model and training state in `.artifacts/checkpoints/`.
 
-Of course, for more control, you can check out `model.py`.
+You can then evaluate the model by running:
+```sh
+python -m scripts.evaluate
+```
+
+For more control, you can modify the scripts in `./scripts/`, and you shall see a marked section for configuration in each file.
 
 ## Architecture
 
@@ -62,7 +67,7 @@ and is pretrained with:
 * Stable LR for the first 65% of the steps (40 first steps have warmup), LinearLR decay to 5% of base LR for the rest.
 * Cautious weight decay inspired by nanochat.
 * BF16 mixed precision training and other Blackwell-specific features.
-* Training with torch.compile on "max-autotune" mode and `dynamic=False`.
+* Training with torch.compile.
 * Gradient checkpointing.
 
 and generates text with:
@@ -122,8 +127,8 @@ PlanckGPT is inspired by [`modded-nanogpt`](https://github.com/KellerJordan/modd
 }
 ```
 
-## Copyright and License
+## Copyrights and License
 
-Copyright © 2025 Nguyen Phu Minh.
+Copyrights © 2025 Nguyen Phu Minh.
 
 This project is licensed under the Apache 2.0 License.

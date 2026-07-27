@@ -16,10 +16,10 @@ class Muon(Optimizer):
     
     Args:
         params: Iterable of parameters to optimize
-        lr: Learning rate (default: 0.02)
+        lr: Learning rate (default: 0.3)
         momentum: Nesterov momentum coefficient (default: 0.95)
-        weight_decay: Cautious weight decay coefficient (default: 0.0)
-        beta2: Second moment decay rate for variance reduction (default: 0.95)
+        weight_decay: Cautious weight decay coefficient (default: 0.2)
+        beta2: Second moment decay rate for variance reduction (default: 0.9)
         ns_steps: Number of Polar Express iterations (default: 5, max: 5)
     """
     
@@ -44,13 +44,24 @@ class Muon(Optimizer):
             raise ValueError(f"Invalid ns_steps: {ns_steps} (must be 1-5)")
         
         defaults = dict(
-            lr=lr,
             momentum=momentum,
             weight_decay=weight_decay,
             beta2=beta2,
             ns_steps=ns_steps,
         )
-        super().__init__(params, defaults)
+        
+        # Group params by shape so each group gets aspect-ratio-scaled lr
+        params = list(params)
+        shape_groups = {}
+        for p in params:
+            shape_groups.setdefault(p.shape, []).append(p)
+        
+        param_groups = [
+            {"params": ps, "lr": lr * max(1.0, shape[-2] / shape[-1]) ** 0.5 if len(shape) >= 2 else lr}
+            for shape, ps in shape_groups.items()
+        ]
+        
+        super().__init__(param_groups, defaults)
     
     @torch.no_grad()
     def step(self, closure=None):
