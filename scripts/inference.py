@@ -12,13 +12,10 @@ repetition_penalty=1.2
 repetition_window=64
 # -----------------------------------------------------------------------------
 
-torch.cuda.empty_cache()
-
 # Initialize model
 gpt = GPT({
     "device": torch.device("cuda")
 })
-gpt = torch.compile(gpt)
 gpt.eval()
 
 print(f"Using device: {gpt.device}")
@@ -88,8 +85,6 @@ while True:
             # Sample from top-k
             sampled_index = torch.multinomial(top_k_probs, 1).item()
             next_token_id = top_k_indices[sampled_index].item()
-
-            torch.cuda.empty_cache()
 
             # Stop on eos token and conversation overlap
             if next_token_id == gpt.eos_token_id:
