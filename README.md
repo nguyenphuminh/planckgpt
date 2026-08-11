@@ -87,7 +87,6 @@ These are things I might implement in the future:
 
 * Training improvements:
   * Try out different pretraining datasets, e.g. ClimbMix.
-  * Consider adding LR warmup.
   * Try Gram Newton-Schulz to improve Muon's speed.
   * Use up-to-date Flash Attention implementation.
   * Support FP8 and potentially NVFP4 training.
@@ -106,6 +105,7 @@ These are things I might implement in the future:
   * Current stable range might be too high.
   * Some data segments might be noisy.
   * Embedding might be unstable currently due to AdamW8bit.
+  * Weight decay might need more tuning.
 * Finetuning for multiple purposes.
 * Try different datasets for both pretraining and finetuning.
 * Export to multiple formats for inference.
