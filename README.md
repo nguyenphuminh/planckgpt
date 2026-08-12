@@ -86,8 +86,10 @@ The current configuration is designed to squeeze out the best possible performan
 These are things I might implement in the future:
 
 * Training improvements:
+  * Add Muon momentum warmup/warmdown.
   * Try out different pretraining datasets, e.g. ClimbMix.
   * Try Gram Newton-Schulz to improve Muon's speed.
+  * Optimize Muon, current implementation is naive.
   * Use up-to-date Flash Attention implementation.
   * Support FP8 and potentially NVFP4 training.
   * Tune hyperparameters further.
@@ -127,8 +129,8 @@ PlanckGPT is inspired by [`modded-nanogpt`](https://github.com/KellerJordan/modd
 }
 ```
 
-## Copyrights and License
+## Copyright and License
 
-Copyrights © 2025 Nguyen Phu Minh.
+Copyright © 2025 Nguyen Phu Minh.
 
 This project is licensed under the Apache 2.0 License.
