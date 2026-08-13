@@ -39,6 +39,8 @@ scale = 1 / (d_model / 768) ** 0.5 # Scale for different d_model
 adam_config = {
     "output":    { "lr": 0.008 * scale, "betas": (0.8, 0.96),  "eps": 1e-10, "weight_decay": 0.01  },
     "embedding": { "lr": 0.3 * scale,   "betas": (0.8, 0.995), "eps": 1e-10, "weight_decay": 0.001 },
+    "resid_lambdas": { "lr": 0.5 * 0.01, "betas": (0.8, 0.95), "eps": 1e-10, "weight_decay": 0.05 },
+    "x0_lambdas": { "lr": 0.5, "betas": (0.96, 0.95), "eps": 1e-10, "weight_decay": 0.0 },
 }
 muon_config = {
     "matrix": { "lr": 0.02, "weight_decay": 0.185 }
@@ -51,14 +53,14 @@ model_path = "./artifacts/planckgpt.pth"
 
 
 # Initialize model
-gpt = GPT({
+raw_gpt = GPT({
     "d_model": d_model,
     "num_layers": num_layers,
     "num_heads": num_heads,
     "rotary_seq_len": rotary_seq_len,
     "device": device
 })
-gpt = torch.compile(gpt, mode="max-autotune-no-cudagraphs", dynamic=False)
+gpt = torch.compile(raw_gpt, mode="max-autotune-no-cudagraphs", dynamic=False)
 gpt.train()
 
 print(f"Using device: {gpt.device}")
@@ -77,12 +79,14 @@ base_wd = muon_config["matrix"]["weight_decay"]
 adam_params = [
     { "params": [gpt.output.weight],    **adam_config["output"],    "lr": adam_config["output"]["lr"]    },
     { "params": [gpt.embedding.weight], **adam_config["embedding"], "lr": adam_config["embedding"]["lr"] },
+    { "params": [gpt.resid_lambdas], **adam_config["resid_lambdas"], "lr": adam_config["resid_lambdas"]["lr"] },
+    { "params": [gpt.x0_lambdas], **adam_config["x0_lambdas"], "lr": adam_config["x0_lambdas"]["lr"] },
 ]
 adam_opt = AdamW8bit(adam_params)
 adam_initial_lrs = [group["lr"] for group in adam_opt.param_groups]
 
 # Muon for transformer params
-muon_params = [p for n, p in gpt.named_parameters() if "embedding" not in n and "output" not in n]
+muon_params = [p for n, p in gpt.named_parameters() if all(key not in n for key in adam_config.keys())]
 muon_opt = Muon(muon_params, lr = muon_config["matrix"]["lr"])
 muon_initial_lrs = [group["lr"] for group in muon_opt.param_groups]
 
@@ -99,7 +103,7 @@ if checkpoint_path:
         latest = ckpts[-1]
         print(f"Resuming from checkpoint: {latest}")
         ckpt = torch.load(latest, map_location=gpt.device)
-        gpt.load_state_dict(ckpt["model_state_dict"])
+        raw_gpt.load_state_dict(ckpt["model_state_dict"])
         adam_opt.load_state_dict(ckpt["adam_opt_state_dict"])
         muon_opt.load_state_dict(ckpt["muon_opt_state_dict"])
         optimizer_step = ckpt["optimizer_step"]
@@ -118,13 +122,10 @@ def get_lr_multiplier(step):
     elif step <= total_steps - warmdown_steps:
         return 1.0
     else:
-        progress = (total_steps - step) / warmdown_steps
+        progress = max((total_steps - step) / warmdown_steps, 0.0)
         return progress * 1.0 + (1 - progress) * max_decay
 
 def opt_step():
-    # Gradient clipping
-    torch.nn.utils.clip_grad_norm_(gpt.parameters(), 1.0)
-
     # LR schedule
     lrm = get_lr_multiplier(optimizer_step)
     for i, group in enumerate(adam_opt.param_groups):
@@ -133,7 +134,7 @@ def opt_step():
         group["lr"] = muon_initial_lrs[i] * lrm
 
     # Weight decay cosine schedule to zero
-    wd = base_wd * 0.5 * (1 + math.cos(math.pi * optimizer_step / total_steps))
+    wd = base_wd * 0.5 * (1 + math.cos(math.pi * min(optimizer_step, total_steps) / total_steps))
     for group in muon_opt.param_groups:
         group["weight_decay"] = wd
 
@@ -220,7 +221,7 @@ for segment_index, segment in enumerate(data_loader):
         f"Matrix LR: {muon_current_lr:.6f}, "
         f"Batches: {num_batches}"
     )
-    gpt.save(model_path)
+    raw_gpt.save(model_path)
     print(f"Segment {segment_index + 1}: Saved to planckgpt.pth")
 
     # Save training checkpoint
@@ -230,7 +231,7 @@ for segment_index, segment in enumerate(data_loader):
         torch.save({
             "segment_index": segment_index,
             "optimizer_step": optimizer_step,
-            "model_state_dict": gpt.state_dict(),
+            "model_state_dict": raw_gpt.state_dict(),
             "adam_opt_state_dict": adam_opt.state_dict(),
             "muon_opt_state_dict": muon_opt.state_dict(),
         }, ckpt_path)
