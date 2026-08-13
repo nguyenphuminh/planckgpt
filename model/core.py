@@ -119,6 +119,10 @@ class GPT(nn.Module):
         # Embedding
         self.embedding = nn.Embedding(self.vocab_size, self.d_model)
 
+        # Per-layer learnable scalars, fake init, modified in-place later
+        self.resid_lambdas = nn.Parameter(torch.ones(self.num_layers))
+        self.x0_lambdas = nn.Parameter(torch.zeros(self.num_layers))
+
         # Transformer decoder layers
         self.transformer = nn.ModuleList([
             Transformer(
@@ -164,6 +168,13 @@ class GPT(nn.Module):
         
         # Output head - small init instead of zeros
         torch.nn.init.normal_(self.output.weight, mean=0.0, std=0.001)
+
+        # Per-layer resid init: stronger residual at early layers, weaker at deep layers
+        for i in range(self.num_layers):
+            self.resid_lambdas.data[i] = 1.15 - (0.10 * i / max(self.num_layers - 1, 1))
+        # Decaying x0 init: earlier layers get more input embedding blending
+        for i in range(self.num_layers):
+            self.x0_lambdas.data[i] = 0.20 - (0.15 * i / max(self.num_layers - 1, 1))
         
         # Transformer blocks: uniform init with bound = sqrt(3) * std
         s = 3**0.5 * self.d_model**-0.5  # sqrt(3)/sqrt(d_model)
@@ -230,8 +241,13 @@ class GPT(nn.Module):
         # Initialize cache list
         new_kv_caches = []
 
+        # Store initial embedding to blend in later
+        initial_embedding = embedding
+
         # Transformer forward pass
         for i, layer in enumerate(self.transformer):
+            embedding = self.resid_lambdas[i] * embedding + self.x0_lambdas[i] * initial_embedding
+
             if self.use_kv_cache:
                 layer_cache = self.kv_caches[i] if i < len(self.kv_caches) else None
                 embedding, new_kv_cache = layer(embedding, cos, sin, layer_cache)
@@ -263,7 +279,7 @@ class GPT(nn.Module):
     def load(self, path):
         """Utility to load saved model"""
         checkpoint = torch.load(path, map_location=self.device)
-        self.load_state_dict(checkpoint["model_state_dict"], strict=False)
+        self.load_state_dict(checkpoint["model_state_dict"])
         del checkpoint
         torch.cuda.empty_cache()
 
