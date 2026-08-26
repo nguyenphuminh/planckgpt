@@ -16,7 +16,6 @@ repetition_window=64
 gpt = GPT({
     "device": torch.device("cuda")
 })
-gpt.eval()
 
 print(f"Using device: {gpt.device}")
 print(f"Model parameters: {sum(p.numel() for p in gpt.parameters()):,}")

@@ -2,7 +2,6 @@ import tiktoken
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.checkpoint import checkpoint
 
 def rms_norm(x):
     """RMS norm with no learnable params"""
@@ -218,7 +217,7 @@ class GPT(nn.Module):
         cos, sin = cos[None, None, :, :], sin[None, None, :, :]
         return cos, sin
 
-    def forward(self, token_ids):
+    def forward(self, token_ids, targets=None, loss_reduction="mean"):
         _, seq_len = token_ids.shape
 
         # Token embedding
@@ -253,7 +252,7 @@ class GPT(nn.Module):
                 embedding, new_kv_cache = layer(embedding, cos, sin, layer_cache)
                 new_kv_caches.append(new_kv_cache)
             else:
-                embedding, _ = checkpoint(layer, embedding, cos, sin, None, use_reentrant=False)
+                embedding, _ = layer(embedding, cos, sin, None)
 
         # Update cache list
         self.kv_caches = new_kv_caches
@@ -268,7 +267,15 @@ class GPT(nn.Module):
         softcap = 15.0
         output = softcap * torch.tanh(output.float() / softcap)
         
-        return output
+        if targets is not None:
+            return F.cross_entropy(
+                output.view(-1, output.size(-1)),
+                targets.view(-1),
+                ignore_index=-1,
+                reduction=loss_reduction
+            )
+        else:
+            return output
 
     def save(self, path):
         """Utility to save model"""

@@ -1,6 +1,5 @@
 import math
 import torch
-import torch.nn as nn
 from torch.amp import autocast
 from optim.muon import Muon
 from bitsandbytes.optim import AdamW8bit
@@ -61,16 +60,12 @@ raw_gpt = GPT({
     "device": device
 })
 gpt = torch.compile(raw_gpt, mode="max-autotune-no-cudagraphs", dynamic=False)
-gpt.train()
 
 print(f"Using device: {gpt.device}")
 print(f"Model parameters: {sum(p.numel() for p in gpt.parameters()):,}")
 
 # Cap context window
 sequence_length = min(sequence_length, gpt.rotary_seq_len)
-
-# Loss
-criterion = nn.CrossEntropyLoss()
 
 # Warmup steps and base weight decay to prepare for warmdown
 base_wd = muon_config["matrix"]["weight_decay"]
@@ -179,11 +174,10 @@ for segment_index, segment in enumerate(data_loader):
 
         # Enable mixed precision
         with autocast(device_type=gpt.device.type, dtype=torch.bfloat16):
-            output = gpt.forward(input_tokens)  # [batch_size, seq_len-1, vocab_size]
-            output = output.reshape(-1, gpt.vocab_size)  # [batch_size * seq_len-1, vocab_size]
-            target_tokens = target_tokens.reshape(-1)  # [batch_size * seq_len-1]
-            loss = criterion(output, target_tokens)
-            loss = loss / gradient_accumulation_steps
+            loss = gpt.forward(
+                input_tokens, 
+                target_tokens.reshape(-1)
+            ) / gradient_accumulation_steps
 
         # Propagate grad
         loss.backward()
