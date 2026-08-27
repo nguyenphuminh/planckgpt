@@ -36,7 +36,7 @@ To pretrain the model from scratch, run:
 python -m scripts.pretrain
 ```
 
-The model will train with ~2b tokens/20 100m-token segments, and after each epoch it will save the current model to `./artifacts/planckgpt.pth` and a checkpoint containing the model and training state in `.artifacts/checkpoints/`.
+The model will train with ~2b tokens/20 100m-token segments, and after each epoch it will save the current model to `./artifacts/planckgpt.pth` and a checkpoint containing the model and training state in `./artifacts/checkpoints/`.
 
 You can then evaluate the model by running:
 ```sh
