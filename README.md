@@ -1,6 +1,6 @@
 # PlanckGPT
 
-PlanckGPT (planck length reference :D) is my attempt to make a tiny language model from scratch mostly for fun and educational purposes, but also to see how far a consumer-level computer can go in AI development **from scratch**. It has about 206m parameters and is pretrained on roughly 2 billion tokens of the Fineweb-edu dataset. This is small compared to modern LLMs' standards, and it only does next token prediction, but you can definitely train this on a mid-range GPU for just 1-2 days (~22 hours and 20 minutes on my laptop's RTX 5070 Mobile 8gb). Its performance should match that of a GPT2-small, with ~3.0593 average val loss and ~0.9476 bpb val loss on Fineweb-edu.
+PlanckGPT (planck length reference :D) is my attempt to make a tiny language model from scratch mostly for fun and educational purposes, but also to see how far a consumer-level computer can go in AI development **from scratch**. It has about 206m parameters and is pretrained on roughly 2 billion tokens of the Fineweb-edu dataset, and can be further finetuned for general chat. This is small compared to modern LLMs' standards, but you can definitely train this on a mid-range GPU for just 1-2 days (~22 hours and 20 minutes on my laptop's RTX 5070 Mobile 8gb for pretraining, ~3 hours and 20 minutes for chat finetuning). Its pretrained performance should match that of a GPT2-small, with ~3.0593 average val loss and ~0.9476 bpb val loss on Fineweb-edu.
 
 ## Setup
 
@@ -21,13 +21,19 @@ Of course, you should already install compatible CUDA and Python versions, I cur
 
 ## Running PlanckGPT
 
-1. Download the latest model (`planckgpt.pth`) in the releases page and place it in `./artifacts/`.
-2. Simply run:
+First, download the latest model (`planckgpt-chat.pth` for the chat-finetuned version, `planckgpt.pth` for the pretrained-only version) in the releases page and place it in `./artifacts/`.
+
+For the chat-finetuned version, simply run:
+```sh
+python -m scripts.sft_inference
+```
+
+For the pretrained-only version, run:
 ```sh
 python -m scripts.inference
 ```
 
-A prompt will appear for you to generate text with the model.
+A prompt will appear for you to chat with the model.
 
 ## Pretraining
 
@@ -44,6 +50,20 @@ python -m scripts.evaluate
 ```
 
 For more control, you can modify the scripts in `./scripts/`, and you shall see a marked section for configuration in each file.
+
+## Chat finetuning
+
+To finetune the model for general chat, be sure to have `./artifacts/planckgpt.pth` first and your latest checkpoint in `./artifacts/checkpoints/` (the latter is optional but recommended for better quality). Then, run:
+```sh
+python -m scripts.sft
+```
+
+You can then evaluate the model by running:
+```sh
+python -m scripts.sft_evaluate
+```
+
+Again, for more control, you can modify the scripts in `./scripts/`.
 
 ## Architecture
 
@@ -81,6 +101,23 @@ and generates text with:
 
 The current configuration is designed to squeeze out the best possible performance out of an 8gb 5070 Mobile, you can change the configs to match your card.
 
+### Finetuning
+
+For finetuning specifically, here is some extra info:
+
+* Dataset:
+  * All of smol-smoltalk.
+  * 1k of identity data, duplicated for 2 epochs, generated naively through Claude with this README as prompt.
+* Chat format: `User: ...\n\nAssistant:...<|endoftext|>...`.
+* Data handling: Nanochat-style best-fit packing.
+* Hyperparameters are roughly similar to pretraining, with some changes:
+  * LR is scaled by 0.8.
+  * No warmups, and stable range is 0.5.
+  * LR decays to 0.
+  * Weight decay is set to 0.
+  * Momentum buffers are picked up from pretraining's checkpoint.
+* User tokens are masked during loss computation.
+
 ## Potential todos
 
 These are things I might implement in the future:
@@ -102,16 +139,21 @@ These are things I might implement in the future:
   * Sliding window attention.
   * Smear.
   * Backout.
+* Finetuning improvements:
+  * Try out more datasets.
+  * Potentially better data handling.
+  * Create identity data properly.
+  * Tune hyperparameters.
+* Evaluation improvements: Currently, I only evaluate based on val loss of Fineweb-edu and Smol-smoltalk, but there should be more rigorous and general evaluation methods and benchmarks.
 * Potential issues to look after:
   * The current data to params ratio still needs more tuning.
-  * Current stable range might be too high.
-  * Some data segments might be noisy.
+  * Current stable range in pretraining might be too high.
+  * Some data segments in pretraining might be noisy.
   * Embedding might be unstable currently due to AdamW8bit.
-  * Weight decay might need more tuning.
-* Finetuning for multiple purposes.
-* Try different datasets for both pretraining and finetuning.
+  * Weight decay might need more tuning for pretraining.
+* Finetuning for multiple purposes (currently we have general chat, but we can probably do more).
+* Reinforcement learning?
 * Export to multiple formats for inference.
-* Code refactoring.
 
 ## Acknowledgements
 

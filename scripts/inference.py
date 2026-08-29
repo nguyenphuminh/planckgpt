@@ -10,6 +10,7 @@ topk=50
 topp=0.95
 repetition_penalty=1.2
 repetition_window=64
+model_path="./artifacts/planckgpt.pth"
 # -----------------------------------------------------------------------------
 
 # Initialize model
@@ -21,8 +22,8 @@ print(f"Using device: {gpt.device}")
 print(f"Model parameters: {sum(p.numel() for p in gpt.parameters()):,}")
 
 # Load model
-gpt.load("./artifacts/planckgpt.pth")
-print("Loaded from planckgpt.pth\n")
+gpt.load(model_path)
+print(f"Loaded from {model_path}")
 
 # Prompt
 while True:
