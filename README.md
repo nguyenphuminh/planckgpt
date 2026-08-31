@@ -1,6 +1,10 @@
 # PlanckGPT
 
-PlanckGPT (planck length reference :D) is my attempt to make a tiny language model from scratch mostly for fun and educational purposes, but also to see how far a consumer-level computer can go in AI development **from scratch**. It has about 206m parameters and is pretrained on roughly 2 billion tokens of the Fineweb-edu dataset, and can be further finetuned for general chat. This is small compared to modern LLMs' standards, but you can definitely train this on a mid-range GPU for just 1-2 days (~22 hours and 20 minutes on my laptop's RTX 5070 Mobile 8gb for pretraining, ~3 hours and 20 minutes for chat finetuning). Its pretrained performance should match that of a GPT2-small, with ~3.0593 average val loss and ~0.9476 bpb val loss on Fineweb-edu.
+PlanckGPT (planck length reference :D) is my attempt to make a tiny language model from scratch mostly for fun and educational purposes, but also to see how far a consumer-level computer can go in AI development **from scratch**. It has about 206m parameters and is pretrained on roughly 2 billion tokens of the Fineweb-edu dataset, and can be further finetuned for general chat. This is small compared to modern LLMs' standards, but you can definitely train this on a mid-range GPU for just 1-2 days (~22 hours and 20 minutes on my laptop's RTX 5070 Mobile 8gb for pretraining, ~3 hours and 20 minutes for chat finetuning). Its pretrained performance should match that of a GPT2-small, with ~3.0593 average val loss and ~0.9476 bpb val loss on Fineweb-edu, and it has chat-finetuned performance of ~1.1868 average val loss and ~0.3739 bpb val loss on Smol-smoltalk.
+
+The target of this project is achieving the best quality over training time possible, and I currently enforce a soft limit of 50 hours in training time (neat for training over the weekend :D) with my laptop, which has an Intel Core i7 14700HX, 24gb of RAM, and an RTX 5070 mobile 8gb.
+
+Also check out PlanckGPT on [Hugging Face](https://huggingface.co/collections/cattonpm/planckgpt)!
 
 ## Setup
 
@@ -21,7 +25,7 @@ Of course, you should already install compatible CUDA and Python versions, I cur
 
 ## Running PlanckGPT
 
-First, download the latest model (`planckgpt-chat.pth` for the chat-finetuned version, `planckgpt.pth` for the pretrained-only version) in the releases page and place it in `./artifacts/`.
+First, download the latest model (`planckgpt-chat.pth` for the chat-finetuned version, `planckgpt.pth` for the pretrained-only version) from the [releases page](https://github.com/nguyenphuminh/planckgpt/releases) or [Hugging Face](https://huggingface.co/collections/cattonpm/planckgpt) and place it in `./artifacts/`.
 
 For the chat-finetuned version, simply run:
 ```sh
@@ -140,6 +144,7 @@ These are things I might implement in the future:
   * Smear.
   * Backout.
 * Finetuning improvements:
+  * Add proper special tokens for chat rather than using raw `User:` and `Assistant:` strings.
   * Try out more datasets.
   * Potentially better data handling.
   * Create identity data properly.
