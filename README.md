@@ -1,6 +1,6 @@
 # PlanckGPT
 
-PlanckGPT (planck length reference :D) is my attempt to make a tiny language model from scratch mostly for fun and educational purposes, but also to see how far a consumer-level computer can go in AI development **from scratch**. It has about 206m parameters and is pretrained on roughly 2 billion tokens of the Fineweb-edu dataset, and can be further finetuned for general chat. This is small compared to modern LLMs' standards, but you can definitely train this on a mid-range GPU for just 1-2 days (~22 hours and 20 minutes on my laptop's RTX 5070 Mobile 8gb for pretraining, ~3 hours and 20 minutes for chat finetuning). Its pretrained performance should match that of a GPT2-small, with ~3.0593 average val loss and ~0.9476 bpb val loss on Fineweb-edu, and it has chat-finetuned performance of ~1.1868 average val loss and ~0.3739 bpb val loss on Smol-smoltalk.
+PlanckGPT (planck length reference :D) is my attempt to make a tiny language model from scratch mostly for fun and educational purposes, but also to see how far a consumer-level computer can go in AI development **from scratch**. It has about 206m parameters and is pretrained on roughly 2 billion tokens of the Fineweb-edu dataset, and can be further finetuned for general chat. This is small compared to modern LLMs' standards, but you can definitely train this on a mid-range GPU for just 1-2 days (~22 hours and 20 minutes on my laptop's RTX 5070 Mobile 8gb for pretraining, ~3 hours and 20 minutes for chat finetuning). Its pretrained performance should match that of a GPT2-small, with ~3.0428 average val loss and ~0.9425 bpb val loss on Fineweb-edu, and it has chat-finetuned performance of ~1.184 average val loss and ~0.373 bpb val loss on Smol-smoltalk.
 
 The target of this project is achieving the best quality over training time possible, and I currently enforce a soft limit of 50 hours in training time (neat for training over the weekend :D) with my laptop, which has an Intel Core i7 14700HX, 24gb of RAM, and an RTX 5070 mobile 8gb.
 
@@ -127,11 +127,9 @@ For finetuning specifically, here is some extra info:
 These are things I might implement in the future:
 
 * Training improvements:
-  * Add Muon momentum warmup/warmdown.
   * Try out different pretraining datasets, e.g. ClimbMix.
-  * Try Gram Newton-Schulz to improve Muon's speed.
-  * Optimize Muon, current implementation is naive.
-  * Use up-to-date Flash Attention implementation.
+  * Try out many Muon improvement ideas: MuonEq, Muon+, Gram Newton-Schulz, etc.
+  * Try using prebuilt optimized kernels for different components. 
   * Support FP8 and potentially NVFP4 training.
   * Tune hyperparameters further.
 * Architecture improvements:
@@ -152,7 +150,6 @@ These are things I might implement in the future:
 * Evaluation improvements: Currently, I only evaluate based on val loss of Fineweb-edu and Smol-smoltalk, but there should be more rigorous and general evaluation methods and benchmarks.
 * Potential issues to look after:
   * The current data to params ratio still needs more tuning.
-  * Current stable range in pretraining might be too high.
   * Some data segments in pretraining might be noisy.
   * Embedding might be unstable currently due to AdamW8bit.
   * Weight decay might need more tuning for pretraining.

@@ -18,10 +18,11 @@ rotary_seq_len = 1024
 device = torch.device("cuda")
 
 # Decay config
-stable_range = 0.65
-total_steps = 3815
+stable_range = 0.35
+total_steps = 3808
 warmup_steps = 40
 max_decay = 0.05
+momentum_warmup_steps = 400
 
 # Batch config
 sequence_length = 1024
@@ -31,7 +32,6 @@ gradient_accumulation_steps = 128
 # Data config
 data_loader = load_data()
 val_data_loader = [*load_val_data()]
-num_segments=20
 
 # Hyperparams config
 scale = 1 / (d_model / 768) ** 0.5 # Scale for different d_model
@@ -85,7 +85,7 @@ muon_params = [p for n, p in gpt.named_parameters() if all(key not in n for key 
 muon_opt = Muon(muon_params, lr = muon_config["matrix"]["lr"])
 muon_initial_lrs = [group["lr"] for group in muon_opt.param_groups]
 
-# Track optimizer step for Muon momentum update
+# Track optimizer step
 optimizer_step = 0
 
 # Resume from latest checkpoint if one exists
@@ -120,6 +120,18 @@ def get_lr_multiplier(step):
         progress = max((total_steps - step) / warmdown_steps, 0.0)
         return progress * 1.0 + (1 - progress) * max_decay
 
+def get_muon_momentum(step):
+    warmdown_steps = int((1 - stable_range) * total_steps)
+    warmdown_start = total_steps - warmdown_steps
+    if step <= momentum_warmup_steps:
+        frac = step / momentum_warmup_steps
+        return (1 - frac) * 0.85 + frac * 0.97
+    elif step > warmdown_start:
+        progress = min((step - warmdown_start) / warmdown_steps, 1.0)
+        return 0.97 * (1 - progress) + 0.90 * progress
+    else:
+        return 0.97
+
 def opt_step():
     # LR schedule
     lrm = get_lr_multiplier(optimizer_step)
@@ -128,16 +140,23 @@ def opt_step():
     for i, group in enumerate(muon_opt.param_groups):
         group["lr"] = muon_initial_lrs[i] * lrm
 
-    # Weight decay cosine schedule to zero
+    # Muon weight decay cosine schedule to zero
     wd = base_wd * 0.5 * (1 + math.cos(math.pi * min(optimizer_step, total_steps) / total_steps))
     for group in muon_opt.param_groups:
         group["weight_decay"] = wd
+
+    # Muon momentum schedule
+    momentum = get_muon_momentum(optimizer_step)
+    for group in muon_opt.param_groups:
+        group["momentum"] = momentum
 
     # Step both optimizers
     adam_opt.step()
     adam_opt.zero_grad(set_to_none=True)
     muon_opt.step()
     muon_opt.zero_grad(set_to_none=True)
+
+micro_step = 0
 
 for segment_index, segment in enumerate(data_loader):
     # Skip already-completed segments when resuming
@@ -158,9 +177,6 @@ for segment_index, segment in enumerate(data_loader):
 
     total_loss = 0
     num_batches = 0
-    
-    adam_opt.zero_grad(set_to_none=True)
-    muon_opt.zero_grad(set_to_none=True)
 
     for batch_start in range(0, len(sequences), batch_size):
         # Skip incomplete batches to avoid recompilation
@@ -183,16 +199,12 @@ for segment_index, segment in enumerate(data_loader):
         loss.backward()
         total_loss += loss.item() * gradient_accumulation_steps
         num_batches += 1
+        micro_step += 1
         
         # Update weights every gradient_accumulation_steps
-        if num_batches % gradient_accumulation_steps == 0:
+        if micro_step % gradient_accumulation_steps == 0:
             opt_step()
             optimizer_step += 1
-
-    # Final update if needed
-    if num_batches % gradient_accumulation_steps != 0 and segment_index == num_segments - 1:
-        opt_step()
-        optimizer_step += 1
 
     # Get log info
     avg_loss = total_loss / num_batches if num_batches > 0 else 0
