@@ -1,6 +1,6 @@
 # PlanckGPT
 
-PlanckGPT (planck length reference :D) is my attempt to make a tiny language model from scratch mostly for fun and educational purposes, but also to see how far a consumer-level computer can go in AI development **from scratch**. It has about 206m parameters and is pretrained on roughly 2 billion tokens of the Fineweb-edu dataset, and can be further finetuned for general chat. This is small compared to modern LLMs' standards, but you can definitely train this on a mid-range GPU for just 1-2 days (~22 hours and 20 minutes on my laptop's RTX 5070 Mobile 8gb for pretraining, ~3 hours and 20 minutes for chat finetuning). Its pretrained performance should match that of a GPT2-small, with ~3.0428 average val loss and ~0.9425 bpb val loss on Fineweb-edu, and it has chat-finetuned performance of ~1.184 average val loss and ~0.373 bpb val loss on Smol-smoltalk.
+PlanckGPT (planck length reference :D) is my attempt to make a tiny language model from scratch mostly for fun and educational purposes, but also to see how far a consumer-level computer can go in AI development **from scratch**. It has about 225m parameters and is pretrained on roughly 2 billion tokens of the Fineweb-edu dataset, and can be further finetuned for general chat. This is small compared to modern LLMs' standards, but you can definitely train this on a mid-range GPU for just 1-2 days (~23 hours and 40 minutes on my laptop's RTX 5070 Mobile 8gb for pretraining, ~3 hours and 35 minutes for chat finetuning). Its pretrained performance should match that of a GPT2-small, with ~3.0242 average val loss and ~0.9368 bpb val loss on Fineweb-edu, and it has chat-finetuned performance of ~1.1673 average val loss and ~0.3678 bpb val loss on Smol-smoltalk.
 
 The target of this project is achieving the best quality over training time possible, and I currently enforce a soft limit of 50 hours in training time (neat for training over the weekend :D) with my laptop, which has an Intel Core i7 14700HX, 24gb of RAM, and an RTX 5070 mobile 8gb.
 
@@ -77,7 +77,7 @@ Currently it uses:
 * Embedding: 896-dimensional token embedding.
 * Rotary positional embedding.
 * Transformer: 14 decoder layers, 7 query heads, 3584 ffn dim, 896 embedding dim.
-* Multi-Query Attention.
+* Multi-Head Attention.
 * Squared ReLU for activation.
 * RMSNorm without learnable params, notably used on QK, transformer (how you would expect), embedding, and output logits.
 * Output: Linear projection with softcap logits (-15, 15).
@@ -88,7 +88,8 @@ and is pretrained with:
 * Context Window: 1024 tokens.
 * Batch Size: 4 (effective batch size: 512 with gradient accumulation).
 * NorMuon optimizer for transformer weights, 8-bit Adam optimizer for embedding and output projection.
-* Stable LR for the first 65% of the steps (40 first steps have warmup), LinearLR decay to 5% of base LR for the rest.
+* Stable LR for the first 35% of the steps (40 first steps have warmup), linear decay to 5% of base LR for the rest.
+* Linear Muon momentum warmup from 0.85 to 0.97 for 400 steps, linear decay to 0.9 when LR decay starts.
 * Cautious weight decay inspired by nanochat.
 * BF16 mixed precision training and other Blackwell-specific features.
 * Training with torch.compile.

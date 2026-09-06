@@ -14,18 +14,18 @@ def apply_rotary_emb(x, cos, sin):
     y2 = x1 * (-sin) + x2 * cos
     return torch.cat((y1, y2), dim=-1)
 
-class MultiQueryAttention(nn.Module):
-    """MQA with kv cache support for the least memory use possible"""
+class MultiHeadAttention(nn.Module):
+    """MHA with kv cache support"""
     def __init__(self, dim, num_heads):
         super().__init__()
         assert dim % num_heads == 0
-        
+
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
 
         self.q_proj = nn.Linear(dim, dim, bias=False)
-        self.k_proj = nn.Linear(dim, self.head_dim, bias=False)
-        self.v_proj = nn.Linear(dim, self.head_dim, bias=False)
+        self.k_proj = nn.Linear(dim, dim, bias=False)
+        self.v_proj = nn.Linear(dim, dim, bias=False)
         self.out_proj = nn.Linear(dim, dim, bias=False)
 
     def forward(self, x, cos, sin, kv_cache=None):
@@ -33,8 +33,8 @@ class MultiQueryAttention(nn.Module):
 
         # QKV projection
         q = self.q_proj(x).view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
-        k = self.k_proj(x).view(B, L, 1, self.head_dim).transpose(1, 2)
-        v = self.v_proj(x).view(B, L, 1, self.head_dim).transpose(1, 2)
+        k = self.k_proj(x).view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
+        v = self.v_proj(x).view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
 
         # RoPE
         q = apply_rotary_emb(q, cos, sin)
@@ -51,10 +51,6 @@ class MultiQueryAttention(nn.Module):
             v = torch.cat([kv_cache[1], v], dim=2)
         # Update cache with current K, V
         new_kv_cache = (k, v)
-
-        # Expand KV to match Q heads
-        k = k.expand(B, self.num_heads, k.size(2), self.head_dim)
-        v = v.expand(B, self.num_heads, v.size(2), self.head_dim)
 
         # Pytorch's scaled dot product attention, should use flash attention behind the hood
         Tq = q.size(2)
@@ -84,7 +80,7 @@ class Transformer(nn.Module):
     def __init__(self, dim, num_heads, dim_ff):
         super().__init__()
 
-        self.attn = MultiQueryAttention(dim, num_heads)
+        self.attn = MultiHeadAttention(dim, num_heads)
         self.ffn1 = nn.Linear(dim, dim_ff, bias=False)
         self.ffn2 = nn.Linear(dim_ff, dim, bias=False)
 
