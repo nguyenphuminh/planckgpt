@@ -106,9 +106,9 @@ and generates text with:
 
 The current configuration is designed to squeeze out the best possible performance out of an 8gb 5070 Mobile, you can change the configs to match your card.
 
-### Finetuning
+### Chat finetuning
 
-For finetuning specifically, here is some extra info:
+For chat finetuning specifically, here is some extra info:
 
 * Dataset:
   * All of smol-smoltalk.
@@ -122,6 +122,13 @@ For finetuning specifically, here is some extra info:
   * Weight decay is set to 0.
   * Momentum buffers are picked up from pretraining's checkpoint.
 * User tokens are masked during loss computation.
+
+Inference is similar to pretraining, with some configs changed:
+
+* k=50 and p=0.9 in top-k and top-p.
+* Temperature: 0.6.
+* Context Window: 1024 tokens with 256 max generation length.
+* Repetition penalty: 1.15 on 128-token window.
 
 ## Potential todos
 
