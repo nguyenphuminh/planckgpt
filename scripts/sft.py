@@ -33,6 +33,7 @@ scale = 1 / (d_model / 768) ** 0.5 # Scale for different d_model
 adam_config = {
     "output":    { "lr": 0.008 * scale, "betas": (0.8, 0.96),  "eps": 1e-10, "weight_decay": 0.0 },
     "embedding": { "lr": 0.3 * scale,   "betas": (0.8, 0.995), "eps": 1e-10, "weight_decay": 0.0 },
+    "value_embeds": { "lr": 0.3 * scale * 0.5, "betas": (0.8, 0.995), "eps": 1e-10, "weight_decay": 0.0 },
     "resid_lambdas": { "lr": 0.5 * 0.01, "betas": (0.8, 0.95), "eps": 1e-10, "weight_decay": 0.0 },
     "x0_lambdas": { "lr": 0.5, "betas": (0.96, 0.95), "eps": 1e-10, "weight_decay": 0.0 },
 }
@@ -76,6 +77,7 @@ sequence_length = min(sequence_length, raw_gpt.rotary_seq_len)
 adam_params = [
     { "params": [raw_gpt.output.weight],    **adam_config["output"]    },
     { "params": [raw_gpt.embedding.weight], **adam_config["embedding"] },
+    { "params": raw_gpt.value_embeds.parameters(), **adam_config["value_embeds"] },
     { "params": [raw_gpt.resid_lambdas],    **adam_config["resid_lambdas"] },
     { "params": [raw_gpt.x0_lambdas],       **adam_config["x0_lambdas"] },
 ]

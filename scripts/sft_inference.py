@@ -5,12 +5,12 @@ from data.finetune_mix import USER_PREFIX, ASSISTANT_PREFIX, STOP_STRING, EOS
 
 # -----------------------------------------------------------------------------
 context_window=1024
-max_length=256
-temperature=0.6
+max_length=400
+temperature=0.8
 topk=50
 topp=0.9
-repetition_penalty=1.15
-repetition_window=128
+repetition_penalty=1.05   # Gentler than the base model, chat repeats itself less
+repetition_window=64
 model_path="./artifacts/planckgpt-chat.pth"
 # -----------------------------------------------------------------------------
 
