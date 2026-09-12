@@ -38,6 +38,7 @@ scale = 1 / (d_model / 768) ** 0.5 # Scale for different d_model
 adam_config = {
     "output":    { "lr": 0.008 * scale, "betas": (0.8, 0.96),  "eps": 1e-10, "weight_decay": 0.01  },
     "embedding": { "lr": 0.3 * scale,   "betas": (0.8, 0.995), "eps": 1e-10, "weight_decay": 0.001 },
+    "value_embeds": { "lr": 0.3 * scale * 0.5, "betas": (0.8, 0.995), "eps": 1e-10, "weight_decay": 0.01 },
     "resid_lambdas": { "lr": 0.5 * 0.01, "betas": (0.8, 0.95), "eps": 1e-10, "weight_decay": 0.05 },
     "x0_lambdas": { "lr": 0.5, "betas": (0.96, 0.95), "eps": 1e-10, "weight_decay": 0.0 },
 }
@@ -74,6 +75,7 @@ base_wd = muon_config["matrix"]["weight_decay"]
 adam_params = [
     { "params": [gpt.output.weight],    **adam_config["output"],    "lr": adam_config["output"]["lr"]    },
     { "params": [gpt.embedding.weight], **adam_config["embedding"], "lr": adam_config["embedding"]["lr"] },
+    { "params": gpt.value_embeds.parameters(), **adam_config["value_embeds"], "lr": adam_config["value_embeds"]["lr"] },
     { "params": [gpt.resid_lambdas], **adam_config["resid_lambdas"], "lr": adam_config["resid_lambdas"]["lr"] },
     { "params": [gpt.x0_lambdas], **adam_config["x0_lambdas"], "lr": adam_config["x0_lambdas"]["lr"] },
 ]

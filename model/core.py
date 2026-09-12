@@ -2,6 +2,7 @@ import tiktoken
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 
 def rms_norm(x):
     """RMS norm with no learnable params"""
@@ -14,9 +15,13 @@ def apply_rotary_emb(x, cos, sin):
     y2 = x1 * (-sin) + x2 * cos
     return torch.cat((y1, y2), dim=-1)
 
+def has_ve(index, num_layers):
+    """Returns True if a transformer layer should have Value Embedding (alternating, last layer always included)."""
+    return index % 2 == (num_layers - 1) % 2
+
 class MultiHeadAttention(nn.Module):
     """MHA with kv cache support"""
-    def __init__(self, dim, num_heads):
+    def __init__(self, dim, num_heads, has_ve):
         super().__init__()
         assert dim % num_heads == 0
 
@@ -28,13 +33,22 @@ class MultiHeadAttention(nn.Module):
         self.v_proj = nn.Linear(dim, dim, bias=False)
         self.out_proj = nn.Linear(dim, dim, bias=False)
 
-    def forward(self, x, cos, sin, kv_cache=None):
+        self.ve_gate_channels = 12
+        self.ve_gate = nn.Linear(self.ve_gate_channels, self.num_heads, bias=False) if has_ve else None
+
+    def forward(self, x, ve, cos, sin, kv_cache=None):
         B, L, _ = x.shape
 
         # QKV projection
         q = self.q_proj(x).view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
         k = self.k_proj(x).view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
         v = self.v_proj(x).view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
+
+        # Value embedding
+        if ve is not None:
+            ve = ve.view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
+            gate = 3 * torch.sigmoid(self.ve_gate(x[..., :self.ve_gate_channels]))
+            v = v + gate.transpose(1, 2).unsqueeze(-1) * ve
 
         # RoPE
         q = apply_rotary_emb(q, cos, sin)
@@ -77,16 +91,16 @@ class MultiHeadAttention(nn.Module):
 
 class Transformer(nn.Module):
     """Transformer block with MQA and Squared Relu activation"""
-    def __init__(self, dim, num_heads, dim_ff):
+    def __init__(self, dim, num_heads, dim_ff, has_ve):
         super().__init__()
 
-        self.attn = MultiHeadAttention(dim, num_heads)
+        self.attn = MultiHeadAttention(dim, num_heads, has_ve)
         self.ffn1 = nn.Linear(dim, dim_ff, bias=False)
         self.ffn2 = nn.Linear(dim_ff, dim, bias=False)
 
-    def forward(self, x, cos, sin, kv_cache=None):
+    def forward(self, x, ve, cos, sin, kv_cache=None):
         # Attention with kv cache
-        attn, new_kv_cache = self.attn(rms_norm(x), cos, sin, kv_cache)
+        attn, new_kv_cache = self.attn(rms_norm(x), ve, cos, sin, kv_cache)
         x = x + attn
         # Uses squared relu for activation
         x = x + self.ffn2(F.relu(self.ffn1(rms_norm(x))).square())
@@ -118,13 +132,19 @@ class GPT(nn.Module):
         self.resid_lambdas = nn.Parameter(torch.ones(self.num_layers))
         self.x0_lambdas = nn.Parameter(torch.zeros(self.num_layers))
 
+        # Value embeddings
+        self.value_embeds = nn.ModuleDict({
+            str(i): nn.Embedding(self.vocab_size, self.d_model) for i in range(self.num_layers) if has_ve(i, self.num_layers)
+        })
+
         # Transformer decoder layers
         self.transformer = nn.ModuleList([
             Transformer(
                 self.d_model,
                 self.num_heads,
-                self.d_model * 4
-            ) for _ in range(self.num_layers)
+                self.d_model * 4,
+                has_ve(i, self.num_layers)
+            ) for i in range(self.num_layers)
         ])
 
         # One-hot output
@@ -189,10 +209,21 @@ class GPT(nn.Module):
             
             # FFN output projection - zero
             torch.nn.init.zeros_(layer.ffn2.weight)
+
+            # VE gate
+            if layer.attn.ve_gate is not None:
+                torch.nn.init.uniform_(layer.attn.ve_gate.weight, 0.0, 0.02)
+
+        # Value embeddings
+        for ve in self.value_embeds.values():
+            torch.nn.init.uniform_(ve.weight, -s, s)
         
         # Cast embeddings to bfloat16 if on CUDA
         if self.embedding.weight.device.type == "cuda":
             self.embedding.to(dtype=torch.bfloat16)
+
+            for ve in self.value_embeds.values():
+                ve.to(dtype=torch.bfloat16)
 
     def _precompute_rotary_embeddings(self, seq_len, head_dim, base=10000):
         """Utility to precompute rotary embeddings for RoPE"""
@@ -242,13 +273,16 @@ class GPT(nn.Module):
         # Transformer forward pass
         for i, layer in enumerate(self.transformer):
             embedding = self.resid_lambdas[i] * embedding + self.x0_lambdas[i] * initial_embedding
+            ve = self.value_embeds[str(i)](token_ids) if str(i) in self.value_embeds else None
 
             if self.use_kv_cache:
                 layer_cache = self.kv_caches[i] if i < len(self.kv_caches) else None
-                embedding, new_kv_cache = layer(embedding, cos, sin, layer_cache)
+                embedding, new_kv_cache = layer(embedding, ve, cos, sin, layer_cache)
                 new_kv_caches.append(new_kv_cache)
+            elif i % 3 == 0:
+                embedding, _ = checkpoint(layer, embedding, ve, cos, sin, None, use_reentrant=False)
             else:
-                embedding, _ = layer(embedding, cos, sin, None)
+                embedding, _ = layer(embedding, ve, cos, sin, None)
 
         # Update cache list
         self.kv_caches = new_kv_caches
