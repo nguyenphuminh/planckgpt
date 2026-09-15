@@ -75,11 +75,11 @@ sequence_length = min(sequence_length, raw_gpt.rotary_seq_len)
 
 # AdamW for embedding/linear weights
 adam_params = [
-    { "params": [raw_gpt.output.weight],    **adam_config["output"]    },
-    { "params": [raw_gpt.embedding.weight], **adam_config["embedding"] },
-    { "params": raw_gpt.value_embeds.parameters(), **adam_config["value_embeds"] },
-    { "params": [raw_gpt.resid_lambdas],    **adam_config["resid_lambdas"] },
-    { "params": [raw_gpt.x0_lambdas],       **adam_config["x0_lambdas"] },
+    { "params": [raw_gpt.output.weight],           **adam_config["output"]        },
+    { "params": [raw_gpt.embedding.weight],        **adam_config["embedding"]     },
+    { "params": raw_gpt.value_embeds.parameters(), **adam_config["value_embeds"]  },
+    { "params": [raw_gpt.resid_lambdas],           **adam_config["resid_lambdas"] },
+    { "params": [raw_gpt.x0_lambdas],              **adam_config["x0_lambdas"]    },
 ]
 adam_opt = AdamW8bit(adam_params)
 

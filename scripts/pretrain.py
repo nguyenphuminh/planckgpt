@@ -66,24 +66,24 @@ print(f"Using device: {gpt.device}")
 print(f"Model parameters: {sum(p.numel() for p in gpt.parameters()):,}")
 
 # Cap context window
-sequence_length = min(sequence_length, gpt.rotary_seq_len)
+sequence_length = min(sequence_length, raw_gpt.rotary_seq_len)
 
 # Warmup steps and base weight decay to prepare for warmdown
 base_wd = muon_config["matrix"]["weight_decay"]
 
 # AdamW for embedding/linear weights
 adam_params = [
-    { "params": [gpt.output.weight],    **adam_config["output"],    "lr": adam_config["output"]["lr"]    },
-    { "params": [gpt.embedding.weight], **adam_config["embedding"], "lr": adam_config["embedding"]["lr"] },
-    { "params": gpt.value_embeds.parameters(), **adam_config["value_embeds"], "lr": adam_config["value_embeds"]["lr"] },
-    { "params": [gpt.resid_lambdas], **adam_config["resid_lambdas"], "lr": adam_config["resid_lambdas"]["lr"] },
-    { "params": [gpt.x0_lambdas], **adam_config["x0_lambdas"], "lr": adam_config["x0_lambdas"]["lr"] },
+    { "params": [raw_gpt.output.weight],           **adam_config["output"]        },
+    { "params": [raw_gpt.embedding.weight],        **adam_config["embedding"]     },
+    { "params": raw_gpt.value_embeds.parameters(), **adam_config["value_embeds"]  },
+    { "params": [raw_gpt.resid_lambdas],           **adam_config["resid_lambdas"] },
+    { "params": [raw_gpt.x0_lambdas],              **adam_config["x0_lambdas"]    },
 ]
 adam_opt = AdamW8bit(adam_params)
 adam_initial_lrs = [group["lr"] for group in adam_opt.param_groups]
 
 # Muon for transformer params
-muon_params = [p for n, p in gpt.named_parameters() if all(key not in n for key in adam_config.keys())]
+muon_params = [p for n, p in raw_gpt.named_parameters() if all(key not in n for key in adam_config.keys())]
 muon_opt = Muon(muon_params, lr = muon_config["matrix"]["lr"])
 muon_initial_lrs = [group["lr"] for group in muon_opt.param_groups]
 
@@ -99,7 +99,7 @@ if checkpoint_path:
     if ckpts:
         latest = ckpts[-1]
         print(f"Resuming from checkpoint: {latest}")
-        ckpt = torch.load(latest, map_location=gpt.device)
+        ckpt = torch.load(latest, map_location=raw_gpt.device)
         raw_gpt.load_state_dict(ckpt["model_state_dict"])
         adam_opt.load_state_dict(ckpt["adam_opt_state_dict"])
         muon_opt.load_state_dict(ckpt["muon_opt_state_dict"])
@@ -167,7 +167,7 @@ for segment_index, segment in enumerate(data_loader):
         continue
 
     # Encode segment to tokens
-    tokens = np.array(gpt.encode(segment))
+    tokens = np.array(raw_gpt.encode(segment))
     print(f"Segment {segment_index + 1}: {len(segment)} chars -> {len(tokens)} tokens")
     # Truncate to fit exact number of sequences
     num_sequences = len(tokens) // sequence_length
@@ -186,12 +186,12 @@ for segment_index, segment in enumerate(data_loader):
             continue
 
         # Get batch input and target
-        batch_sequences = torch.tensor(sequences[batch_start:batch_start + batch_size], dtype=torch.long, device=gpt.device)
+        batch_sequences = torch.tensor(sequences[batch_start:batch_start + batch_size], dtype=torch.long, device=raw_gpt.device)
         input_tokens = batch_sequences[:, :-1]
         target_tokens = batch_sequences[:, 1:]
 
         # Enable mixed precision
-        with autocast(device_type=gpt.device.type, dtype=torch.bfloat16):
+        with autocast(device_type=raw_gpt.device.type, dtype=torch.bfloat16):
             loss = gpt.forward(
                 input_tokens, 
                 target_tokens.reshape(-1)
