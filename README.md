@@ -1,6 +1,6 @@
 # PlanckGPT
 
-PlanckGPT (planck length reference :D) is my attempt to make a tiny language model from scratch mostly for fun and educational purposes, but also to see how far a consumer-level computer can go in AI development **from scratch**. It has about 540m parameters and is pretrained on roughly 2 billion tokens of the Fineweb-edu dataset, and can be further finetuned for general chat. This is small compared to modern LLMs' standards, but you can definitely train this on a mid-range GPU for just 1-2 days (~28 hours and 20 minutes on my laptop's RTX 5070 Mobile 8gb for pretraining, ~4 hours and 10 minutes for chat finetuning). Its pretrained performance should be close to a GPT2-medium, with ~2.9711 average val loss and ~0.9203 bpb val loss on Fineweb-edu, and it has chat-finetuned performance of ~1.1287 average val loss and ~0.3556 bpb val loss on Smol-smoltalk.
+PlanckGPT (planck length reference :D) is my attempt to make a tiny language model from scratch mostly for fun and educational purposes, but also to see how far a consumer-level computer can go in AI development **from scratch**. It has about 540m parameters and is pretrained on roughly 2 billion tokens of the Fineweb-edu dataset, and can be further finetuned for general chat. This is small compared to modern LLMs' standards, but you can definitely train this on a mid-range GPU for just 1-2 days (~28 hours and 20 minutes on my laptop's RTX 5070 Mobile 8gb for pretraining, ~4 hours and 10 minutes for chat finetuning). Its pretrained performance should be close to a GPT2-medium, with ~2.9711 average val loss and ~0.9203 bpb val loss on Fineweb-edu, and it has chat-finetuned performance of ~1.1286 average val loss and ~0.3556 bpb val loss on Smol-smoltalk.
 
 The target of this project is achieving the best quality over training time possible, and I currently enforce a soft limit of 50 hours in training time (neat for training over the weekend :D) with my laptop, which has an Intel Core i7 14700HX, 24gb of RAM, and an RTX 5070 mobile 8gb.
 
@@ -158,10 +158,10 @@ These are things I might implement in the future:
   * Tune hyperparameters.
 * Evaluation improvements: Currently, I only evaluate based on val loss of Fineweb-edu and Smol-smoltalk, but there should be more rigorous and general evaluation methods and benchmarks.
 * Potential issues to look after:
+  * Identity data is loosely followed.
   * The current data to params ratio still needs more tuning.
   * Some data segments in pretraining might be noisy.
   * Embedding might be unstable currently due to AdamW8bit.
-  * Weight decay might need more tuning for pretraining.
 * Finetuning for multiple purposes (currently we have general chat, but we can probably do more).
 * Reinforcement learning?
 * Export to multiple formats for inference.
